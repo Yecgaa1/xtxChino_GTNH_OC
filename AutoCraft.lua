@@ -1,13 +1,17 @@
+wireless = 601;
+waitMins = 5; -- 默认等待时间，单位为分钟
+diamond_chest_multiple = 10000;
+try_times_half = 6;
+is_Redstone_mode = true; -- 是否存在红石控制
 component = require("component")
 sides = require("sides")
 os = require("os")
 gpu = component.gpu
 gold_chest_side = sides.bottom -- 箱子连接在传送器的底部
 diamond_chest_side = sides.up -- 箱子连接在传送器的底部
-diamond_chest_multiple = 10000;
-try_times_half = 6;
+
 function init()
-    print("脚本版本v2.1 2025/12/29")
+    print("脚本版本v2.2 2025/12/29")
     -- local componentList = component.list() -- 这个函数返回一个迭代器用于遍历所有可用组件地址、名称，
     print("全设备地址")
     for address, name in component.list() do -- 循环遍历所有组件，此处的list()支持两个额外参数，第一个是过滤字符串，第二个是是否精确匹配，例如component.list("red",true)
@@ -41,6 +45,17 @@ function init()
         os.exit()
     end
 
+    if is_Redstone_mode then
+        redstone = component.redstone -- 获取所连接的红石卡
+        if redstone then
+            print("红石卡组件地址:")
+            print(redstone.address)
+        else
+            print("未连接红石卡")
+            os.exit()
+        end
+    end
+
     if #me_controller.getCpus() == 0 then
         print("子网未连接合成存储器")
         os.exit()
@@ -56,14 +71,23 @@ function init()
     -- end
 
     print("脚本初始化完成")
+    redstone.setWirelessFrequency(wireless)
 end
-
+function redstoneWork(mode)
+    if is_Redstone_mode then
+        if mode then
+            redstone.setWirelessOutput(true)
+        else
+            redstone.setWirelessOutput(false)
+        end
+    end
+end
 function craftItem(item_label, quantity)
     local Craftables = me_controller.getCraftables({
         label = item_label
     })
     if #Craftables == 0 then
-        print("物品 " .. item_label .. " 不可合成，跳过")
+        print("物品 " .. item_label .. " 缺少配方，跳过")
         return
     end
 
@@ -72,7 +96,7 @@ function craftItem(item_label, quantity)
         os.sleep(1)
     end
     try_times = try_times_half
-    local craft =nil
+    local craft = nil
     while true do
         try_times = try_times - 1
         print("请求合成物品: " .. item_label .. " 数量: " .. quantity)
@@ -153,21 +177,24 @@ end
 
 function main()
     init()
-    local waitMins;
+    local t;
     while true do
         gpu.setForeground(0xFF0000)
         print("倪哥正在超辛勤工作")
+        redstoneWork(true)
         check_diamond_chest()
+        redstoneWork(false)
         gpu.setForeground(0xFF0000)
         print("激爽下班")
-        waitMins = 30 -- 设置等待时间，单位为分钟
+        t = waitMins -- 设置等待时间，单位为分钟
         print("等待" .. waitMins .. "分钟后再次检查")
-        while waitMins > 0 do
-            print("倪哥正在快乐摸鱼，还有" .. waitMins .. "分钟上班")
-            waitMins = waitMins - 1
+        while t > 0 do
+            print("倪哥正在快乐摸鱼，还有" .. t .. "分钟上班")
+            t = t - 1
             os.sleep(60)
         end
     end
 end
 
 main()
+
