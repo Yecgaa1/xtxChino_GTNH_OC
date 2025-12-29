@@ -7,7 +7,7 @@ diamond_chest_side = sides.up -- 箱子连接在传送器的底部
 diamond_chest_multiple = 10000;
 try_times_half = 6;
 function init()
-    print("脚本版本v2.0 2025/12/27")
+    print("脚本版本v2.1 2025/12/29")
     -- local componentList = component.list() -- 这个函数返回一个迭代器用于遍历所有可用组件地址、名称，
     print("全设备地址")
     for address, name in component.list() do -- 循环遍历所有组件，此处的list()支持两个额外参数，第一个是过滤字符串，第二个是是否精确匹配，例如component.list("red",true)
@@ -99,11 +99,12 @@ function craftItem(item_label, quantity)
 
     while true do
         if not craft.isDone() then
+            if craft.isCanceled() then
+                print("合成被取消，结束等待")
+                break
+            end
             print("合成未完成，等待5秒...")
             os.sleep(5)
-        elseif craft.isCanceled() then
-            print("合成被取消，结束等待")
-            break
         else
             print("合成已完成")
             break
@@ -170,4 +171,3 @@ function main()
 end
 
 main()
-
