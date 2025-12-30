@@ -11,7 +11,7 @@ gold_chest_side = sides.bottom -- 箱子连接在传送器的底部
 diamond_chest_side = sides.up -- 箱子连接在传送器的底部
 
 function init()
-    print("脚本版本v2.2 2025/12/29")
+    print("脚本版本v2.2 2025/12/30")
     -- local componentList = component.list() -- 这个函数返回一个迭代器用于遍历所有可用组件地址、名称，
     print("全设备地址")
     for address, name in component.list() do -- 循环遍历所有组件，此处的list()支持两个额外参数，第一个是过滤字符串，第二个是是否精确匹配，例如component.list("red",true)
@@ -47,6 +47,7 @@ function init()
 
     if is_Redstone_mode then
         redstone = component.redstone -- 获取所连接的红石卡
+        redstone.setWirelessFrequency(wireless)
         if redstone then
             print("红石卡组件地址:")
             print(redstone.address)
@@ -71,7 +72,7 @@ function init()
     -- end
 
     print("脚本初始化完成")
-    redstone.setWirelessFrequency(wireless)
+    
 end
 function redstoneWork(mode)
     if is_Redstone_mode then
