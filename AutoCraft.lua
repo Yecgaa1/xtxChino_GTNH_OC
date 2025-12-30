@@ -1,17 +1,70 @@
-wireless = 601;
-waitMins = 5; -- 默认等待时间，单位为分钟
-diamond_chest_multiple = 10000;
-try_times_half = 6;
-is_Redstone_mode = true; -- 是否存在红石控制
 component = require("component")
 sides = require("sides")
 os = require("os")
 gpu = component.gpu
-gold_chest_side = sides.bottom -- 箱子连接在传送器的底部
-diamond_chest_side = sides.up -- 箱子连接在传送器的底部
+is_Redstone_mode = true -- 是否存在红石控制
+isWork = false
+-- 定义配置文件名
+local CONFIG_FILE = "config.lua"
+
+-- 定义默认配置内容
+local DEFAULT_CONFIG = [[
+sides = require("sides")
+-- 配置文件版本号
+config_version = "v1"
+
+-- 应用设置
+wireless = 601; -- 无线红石频率
+waitMins = 5; -- 默认等待时间，单位为分钟
+gold_chest_multiple = 100; -- 黄金箱子物品维持库存倍数
+diamond_chest_multiple = 10000; -- 钻石箱子物品维持库存倍数
+try_times_half = 6; -- 合成失败后尝试减半数量重新请求的次数
+gold_chest_side = sides.bottom -- 金箱子连接在传送器的底部
+diamond_chest_side = sides.up -- 钻石箱子连接在传送器的底部
+]]
+
+-- 检查并创建配置文件的函数
+local function check_and_create_config(filename, content)
+    local f = io.open(filename, "r")
+    if f then
+        print("[-] 发现配置文件: " .. filename)
+        f:close()
+    else
+        print("[!] 配置文件不存在，正在生成默认配置...")
+        f = io.open(filename, "w")
+        if f then
+            f:write(content)
+            f:close()
+            print("[+] 已成功创建默认配置文件,请先修改配置文件再次运行本程序: " .. filename)
+            os.exit() -- 创建完配置文件后退出程序，等待用户修改配置
+        else
+            error("无法写入文件: " .. filename)
+        end
+    end
+end
+
+-- 加载配置到全局变量的函数
+local function load_config(filename)
+    -- 使用 pcall 捕获可能存在的语法错误（防止用户修改配置导致崩溃）
+    local status, err = pcall(dofile, filename)
+    if not status then
+        print("[错误] 加载配置文件失败: " .. err)
+        os.exit(1)
+    else
+        print("[+] 配置文件加载成功。")
+        print("---------------------------------------")
+        print("当前配置:")
+        print("无线红石频率: " .. wireless)
+        print("等待时间(分钟): " .. waitMins)
+        print("黄金箱子物品维持库存倍数: " .. gold_chest_multiple)
+        print("钻石箱子物品维持库存倍数: " .. diamond_chest_multiple)
+        print("合成失败后尝试减半数量重新请求的次数: " .. try_times_half)
+        print("---------------------------------------")
+    end
+end
 
 function init()
-    print("脚本版本v2.2 2025/12/30")
+    print("脚本版本v3.0 2025/12/31")
     -- local componentList = component.list() -- 这个函数返回一个迭代器用于遍历所有可用组件地址、名称，
     print("全设备地址")
     for address, name in component.list() do -- 循环遍历所有组件，此处的list()支持两个额外参数，第一个是过滤字符串，第二个是是否精确匹配，例如component.list("red",true)
@@ -45,7 +98,10 @@ function init()
         os.exit()
     end
 
-    if is_Redstone_mode then
+    if component.redstone == nil then
+        is_Redstone_mode = false
+        print("未连接红石卡，关闭红石模式")
+    else
         redstone = component.redstone -- 获取所连接的红石卡
         redstone.setWirelessFrequency(wireless)
         if redstone then
@@ -72,7 +128,7 @@ function init()
     -- end
 
     print("脚本初始化完成")
-    
+
 end
 function redstoneWork(mode)
     if is_Redstone_mode then
@@ -121,7 +177,8 @@ function craftItem(item_label, quantity)
             break
         end
     end
-
+    print("合成请求已成功提交，等待合成完成...")
+    isWork = true
     while true do
         if not craft.isDone() then
             if craft.isCanceled() then
@@ -177,15 +234,24 @@ function check_diamond_chest()
 end
 
 function main()
+    check_and_create_config(CONFIG_FILE, DEFAULT_CONFIG)
+    load_config(CONFIG_FILE)
+
     init()
     local t;
     while true do
+        ::continue::
         gpu.setForeground(0xFF0000)
         print("倪哥正在超辛勤工作")
+        isWork = false
         redstoneWork(true)
         check_diamond_chest()
         redstoneWork(false)
         gpu.setForeground(0xFF0000)
+        if isWork then
+            print("本次有工作，继续下次检查")
+            goto continue
+        end
         print("激爽下班")
         t = waitMins -- 设置等待时间，单位为分钟
         print("等待" .. waitMins .. "分钟后再次检查")
