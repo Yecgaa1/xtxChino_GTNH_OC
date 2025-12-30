@@ -233,6 +233,45 @@ function check_diamond_chest()
     gpu.setForeground(0xFFFFFF)
 end
 
+function check_gold_chest()
+    gpu.setForeground(0x00FF00)
+    -- 遍历金箱子的东西me_interface中是否存在
+    local gold_chest_slots = transposer.getInventorySize(gold_chest_side)
+    for slot = 1, gold_chest_slots do
+        local item = transposer.getStackInSlot(gold_chest_side, slot)
+        if item then
+            local item_label = item.label
+            local item_count = item.size
+            print("检测到金箱子中第" .. slot .. "格子的物品: " .. item_label .. " 数量: " ..
+                      item_count .. " 意味着需要维持库存: " .. item_count * gold_chest_multiple)
+            local stored_items = me_interface.getItemsInNetwork({
+                label = item_label
+            })
+            local total_count = 0
+            for _, stored_item in ipairs(stored_items) do
+                total_count = total_count + stored_item.size
+            end
+            print("ME网络中该物品的总数量: " .. total_count)
+            if total_count < item_count * gold_chest_multiple then
+                local to_craft_count = item_count * gold_chest_multiple - total_count
+                print("需要合成的数量: " .. to_craft_count)
+                gpu.setForeground(0x66ccFF)
+                craftItem(item_label, to_craft_count)
+                gpu.setForeground(0x00FF00)
+            else
+                print("ME网络中该物品数量已达预期，无需合成")
+            end
+        else
+            print(slot .. "槽位为空，结束本次检查")
+            gpu.setForeground(0xFFFFFF)
+            return -- 如果当前槽位为空，结束检查
+        end
+        print("------")
+    end
+    print("结束本次检查")
+    gpu.setForeground(0xFFFFFF)
+end
+
 function main()
     check_and_create_config(CONFIG_FILE, DEFAULT_CONFIG)
     load_config(CONFIG_FILE)
@@ -246,6 +285,7 @@ function main()
         isWork = false
         redstoneWork(true)
         check_diamond_chest()
+        check_gold_chest()
         redstoneWork(false)
         gpu.setForeground(0xFF0000)
         if isWork then
