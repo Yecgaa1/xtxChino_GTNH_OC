@@ -71,8 +71,9 @@ function init()
         print(address .. "  " .. name)
     end
     print("--------------")
-    me_interface = component.me_interface -- 获取所连接的主网ME接口组件
-    if me_interface then
+    
+    if component.isAvailable("me_interface") then
+        me_interface = component.me_interface -- 获取所连接的主网ME接口组件
         print("主网ME接口组件地址:")
         print(me_interface.address)
     else
@@ -80,8 +81,8 @@ function init()
         os.exit()
     end
 
-    me_controller = component.me_controller -- 获取所连接的子网ME控制器组件
-    if me_controller then
+    if component.isAvailable("me_controller") then
+        me_controller = component.me_controller -- 获取所连接的子网ME控制器组件
         print("子网ME控制器组件地址:")
         print(me_controller.address)
     else
@@ -89,8 +90,8 @@ function init()
         os.exit()
     end
 
-    transposer = component.transposer -- 获取所连接的传送器组件
-    if transposer then
+    if component.isAvailable("transposer") then
+        transposer = component.transposer -- 获取所连接的传送器组件
         print("传送器组件地址:")
         print(transposer.address)
     else
@@ -98,7 +99,7 @@ function init()
         os.exit()
     end
 
-    if component.redstone == nil then
+    if not component.isAvailable("redstone") then
         is_Redstone_mode = false
         print("未连接红石卡，关闭红石模式")
     else
@@ -224,13 +225,13 @@ function check_diamond_chest()
             end
         else
             print(slot .. "槽位为空，结束本次检查")
-            gpu.setForeground(0xFFFFFF)
+            gpu.setForeground(0xFF0000)
             return -- 如果当前槽位为空，结束检查
         end
         print("------")
     end
     print("结束本次检查")
-    gpu.setForeground(0xFFFFFF)
+    gpu.setForeground(0xFF0000)
 end
 
 function check_gold_chest()
@@ -263,13 +264,13 @@ function check_gold_chest()
             end
         else
             print(slot .. "槽位为空，结束本次检查")
-            gpu.setForeground(0xFFFFFF)
+            gpu.setForeground(0xFF0000)
             return -- 如果当前槽位为空，结束检查
         end
         print("------")
     end
     print("结束本次检查")
-    gpu.setForeground(0xFFFFFF)
+    gpu.setForeground(0xFF0000)
 end
 
 function main()
@@ -284,7 +285,9 @@ function main()
         print("倪哥正在超辛勤工作")
         isWork = false
         redstoneWork(true)
+        print("开始检查钻石箱子")
         check_diamond_chest()
+        print("开始检查金箱子")
         check_gold_chest()
         redstoneWork(false)
         gpu.setForeground(0xFF0000)
