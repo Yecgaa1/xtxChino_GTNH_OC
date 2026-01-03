@@ -18,7 +18,7 @@ wireless = 601; -- 无线红石频率
 waitMins = 5; -- 默认等待时间，单位为分钟
 gold_chest_multiple = 100; -- 黄金箱子物品维持库存倍数
 diamond_chest_multiple = 10000; -- 钻石箱子物品维持库存倍数
-try_times_half = 6; -- 合成失败后尝试减半数量重新请求的次数
+try_times_half = 10; -- 合成失败后尝试减半数量重新请求的次数
 gold_chest_side = sides.bottom -- 金箱子连接在传送器的底部
 diamond_chest_side = sides.up -- 钻石箱子连接在传送器的底部
 ]]
@@ -307,6 +307,7 @@ function main()
 end
 
 main()
+
 
 
 
