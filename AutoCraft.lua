@@ -11,16 +11,16 @@ local CONFIG_FILE = "config.lua"
 
 -- 定义默认配置内容
 local DEFAULT_CONFIG =
-    [[sides = require("sides")-- 配置文件版本号 
-    config_version = "v2" -- 应用设置 
-    wireless = 601; -- 无线红石频率 
-    waitMins = 5; -- 默认等待时间，单位为分钟 
-    gold_chest_multiple = 100; -- 黄金箱子物品维持库存倍数 
-    diamond_chest_multiple = 10000; -- 钻石箱子物品维持库存倍数 
-    try_times_half = 10; -- 合成失败后尝试减半数量重新请求的次数 
-    gold_chest_side = sides.bottom -- 金箱子连接在传送器的底部 
-    diamond_chest_side = sides.up -- 钻石箱子连接在传送器的底部 
-    lowest_order_quantity = 1000 -- 最低合成请求数量 ]]
+[[sides = require("sides")-- 配置文件版本号 
+config_version = "v2" -- 应用设置 
+wireless = 601; -- 无线红石频率 
+waitMins = 5; -- 默认等待时间，单位为分钟 
+gold_chest_multiple = 100; -- 黄金箱子物品维持库存倍数 
+diamond_chest_multiple = 10000; -- 钻石箱子物品维持库存倍数 
+try_times_half = 10; -- 合成失败后尝试减半数量重新请求的次数 
+gold_chest_side = sides.bottom -- 金箱子连接在传送器的底部 
+diamond_chest_side = sides.up -- 钻石箱子连接在传送器的底部 
+lowest_order_quantity = 1000 -- 最低合成请求数量 ]]
 
 -- 检查并创建配置文件的函数
 local function check_and_create_config(filename, content)
