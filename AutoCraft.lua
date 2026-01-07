@@ -4,24 +4,14 @@ os = require("os")
 gpu = component.gpu
 is_Redstone_mode = true -- 是否存在红石控制
 isWork = false
+cpu_num = 1
+now_redstone_state = false
 -- 定义配置文件名
 local CONFIG_FILE = "config.lua"
 
 -- 定义默认配置内容
-local DEFAULT_CONFIG = [[
-sides = require("sides")
--- 配置文件版本号
-config_version = "v1"
-
--- 应用设置
-wireless = 601; -- 无线红石频率
-waitMins = 5; -- 默认等待时间，单位为分钟
-gold_chest_multiple = 100; -- 黄金箱子物品维持库存倍数
-diamond_chest_multiple = 10000; -- 钻石箱子物品维持库存倍数
-try_times_half = 10; -- 合成失败后尝试减半数量重新请求的次数
-gold_chest_side = sides.bottom -- 金箱子连接在传送器的底部
-diamond_chest_side = sides.up -- 钻石箱子连接在传送器的底部
-]]
+local DEFAULT_CONFIG =
+    [[sides = require("sides")-- 配置文件版本号 \nconfig_version = "v2" -- 应用设置 \nwireless = 601; -- 无线红石频率 \nwaitMins = 5; -- 默认等待时间，单位为分钟 \ngold_chest_multiple = 100; -- 黄金箱子物品维持库存倍数 \ndiamond_chest_multiple = 10000; -- 钻石箱子物品维持库存倍数 \ntry_times_half = 10; -- 合成失败后尝试减半数量重新请求的次数 \ngold_chest_side = sides.bottom -- 金箱子连接在传送器的底部 \ndiamond_chest_side = sides.up -- 钻石箱子连接在传送器的底部 \nlowest_order_quantity = 1000 -- 最低合成请求数量 \n]]
 
 -- 检查并创建配置文件的函数
 local function check_and_create_config(filename, content)
@@ -59,19 +49,22 @@ local function load_config(filename)
         print("黄金箱子物品维持库存倍数: " .. gold_chest_multiple)
         print("钻石箱子物品维持库存倍数: " .. diamond_chest_multiple)
         print("合成失败后尝试减半数量重新请求的次数: " .. try_times_half)
+        -- print("金箱子连接在传送器的侧面: " .. gold_chest_side)
+        -- print("钻石箱子连接在传送器的侧面: " .. diamond_chest_side)
+        print("最低合成请求数量: " .. lowest_order_quantity)
         print("---------------------------------------")
     end
 end
 
 function init()
-    print("脚本版本v3.0 2025/12/31")
+    print("脚本版本v3.2 2026/1/3")
     -- local componentList = component.list() -- 这个函数返回一个迭代器用于遍历所有可用组件地址、名称，
     print("全设备地址")
     for address, name in component.list() do -- 循环遍历所有组件，此处的list()支持两个额外参数，第一个是过滤字符串，第二个是是否精确匹配，例如component.list("red",true)
         print(address .. "  " .. name)
     end
     print("--------------")
-    
+
     if component.isAvailable("me_interface") then
         me_interface = component.me_interface -- 获取所连接的主网ME接口组件
         print("主网ME接口组件地址:")
@@ -119,6 +112,8 @@ function init()
         os.exit()
     end
 
+    cpu_num = #me_controller.getCpus()
+    print("子网CPU数量: " .. cpu_num)
     -- db = component.database
     -- if db then
     --     print("数据库组件地址:")
@@ -135,8 +130,10 @@ function redstoneWork(mode)
     if is_Redstone_mode then
         if mode then
             redstone.setWirelessOutput(true)
+            now_redstone_state = true
         else
             redstone.setWirelessOutput(false)
+            now_redstone_state = false
         end
     end
 end
@@ -149,17 +146,42 @@ function craftItem(item_label, quantity)
         return
     end
 
-    while me_controller.getCpus()[1].busy do
-        print("ME合成器忙碌中，等待1秒...")
-        os.sleep(1)
+    if (cpu_num == 1) then
+        while me_controller.getCpus()[1].busy do
+            print("ME合成器忙碌中，等待3秒...")
+            os.sleep(3)
+        end
+    else
+        while true do
+            for _, cpu in ipairs(me_controller.getCpus()) do
+                if not cpu.busy then
+                    goto craft_start
+                else
+                    -- 安全地尝试获取 finalOutput 的返回值
+                    local ok, result = pcall(function()
+                        return cpu.cpu.finalOutput().label
+                    end)
+
+                    -- 如果调用成功且 result 不为 nil，再访问其属性
+                    if ok and result == item_label then
+                        print("检测到已有CPU正在合成相同物品，跳过本次合成请求")
+                        return
+                    end
+                end
+            end
+            print("ME合成器全部忙碌中，等待3秒...")
+            os.sleep(3)
+        end
     end
+    ::craft_start::
     try_times = try_times_half
     local craft = nil
+    local begin_quantity = quantity -- 原始请求数量
     while true do
         try_times = try_times - 1
         print("请求合成物品: " .. item_label .. " 数量: " .. quantity)
         craft = Craftables[1].request(quantity)
-        os.sleep(0.5)
+        os.sleep(0.05)
         while craft.isComputing() do
             print("合成计算中，等待1秒...")
             os.sleep(1)
@@ -172,6 +194,11 @@ function craftItem(item_label, quantity)
                 return
             else
                 quantity = math.ceil(quantity / 2)
+                if quantity < lowest_order_quantity and begin_quantity > lowest_order_quantity then
+                    print("合成数量已低于最低合成请求数量: " .. lowest_order_quantity ..
+                              "，放弃本次合成请求")
+                    return
+                end
                 print("尝试减少合成数量至: " .. quantity .. " 后重新请求")
             end
         else
@@ -180,18 +207,22 @@ function craftItem(item_label, quantity)
     end
     print("合成请求已成功提交，等待合成完成...")
     isWork = true
-    while true do
-        if not craft.isDone() then
-            if craft.isCanceled() then
-                print("合成被取消，结束等待")
+    if cpu_num == 1 then
+        while true do
+            if not craft.isDone() then
+                if craft.isCanceled() then
+                    print("合成被取消，结束等待")
+                    break
+                end
+                print("合成未完成，等待3秒...")
+                os.sleep(3)
+            else
+                print("合成已完成")
                 break
             end
-            print("合成未完成，等待5秒...")
-            os.sleep(5)
-        else
-            print("合成已完成")
-            break
         end
+    else
+        print("多CPU模式下，合成请求已提交，继续下一任务")
     end
 end
 
@@ -235,7 +266,7 @@ function check_diamond_chest()
 end
 
 function check_gold_chest()
-    gpu.setForeground(0x00FF00)
+    gpu.setForeground(0x00F000)
     -- 遍历金箱子的东西me_interface中是否存在
     local gold_chest_slots = transposer.getInventorySize(gold_chest_side)
     for slot = 1, gold_chest_slots do
@@ -243,8 +274,9 @@ function check_gold_chest()
         if item then
             local item_label = item.label
             local item_count = item.size
-            print("检测到金箱子中第" .. slot .. "格子的物品: " .. item_label .. " 数量: " ..
-                      item_count .. " 意味着需要维持库存: " .. item_count * gold_chest_multiple)
+            print(
+                "检测到金箱子中第" .. slot .. "格子的物品: " .. item_label .. " 数量: " .. item_count ..
+                    " 意味着需要维持库存: " .. item_count * gold_chest_multiple)
             local stored_items = me_interface.getItemsInNetwork({
                 label = item_label
             })
@@ -289,7 +321,11 @@ function main()
         check_diamond_chest()
         print("开始检查金箱子")
         check_gold_chest()
-        redstoneWork(false)
+
+        if cpu_num == 1 then -- 单cpu模式下肯定关闭
+            redstoneWork(false)
+        end
+
         gpu.setForeground(0xFF0000)
         if isWork then
             print("本次有工作，继续下次检查")
@@ -299,6 +335,20 @@ function main()
         t = waitMins -- 设置等待时间，单位为分钟
         print("等待" .. waitMins .. "分钟后再次检查")
         while t > 0 do
+
+            if cpu_num > 1  and now_redstone_state then -- 多cpu模式下扫描工作
+                local busy_flag = false
+                for _, cpu in ipairs(me_controller.getCpus()) do
+                    if cpu.busy then
+                        busy_flag=true
+                        break
+                    end
+                end
+                if not busy_flag then
+                    redstoneWork(false)
+                end
+            end
+
             print("倪哥正在快乐摸鱼，还有" .. t .. "分钟上班")
             t = t - 1
             os.sleep(60)
@@ -307,7 +357,4 @@ function main()
 end
 
 main()
-
-
-
 
