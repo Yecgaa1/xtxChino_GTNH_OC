@@ -2,7 +2,7 @@ component = require("component")
 sides = require("sides")
 os = require("os")
 gpu = component.gpu
-is_Redstone_mode = true -- 是否存在红石控制
+is_Redstone_mode = 2 -- 是否存在红石控制
 isWork = false
 cpu_num = 1
 now_redstone_state = false
@@ -10,10 +10,9 @@ now_redstone_state = false
 local CONFIG_FILE = "config.lua"
 
 -- 定义默认配置内容
-local DEFAULT_CONFIG =
-[[sides = require("sides")-- 配置文件版本号 
+local DEFAULT_CONFIG = [[sides = require("sides")-- 配置文件版本号 
 config_version = "v2" -- 应用设置 
-wireless = 601; -- 无线红石频率 
+wireless = 0; -- 无线红石频率 
 waitMins = 5; -- 默认等待时间，单位为分钟 
 gold_chest_multiple = 100; -- 黄金箱子物品维持库存倍数 
 diamond_chest_multiple = 10000; -- 钻石箱子物品维持库存倍数 
@@ -66,7 +65,7 @@ local function load_config(filename)
 end
 
 function init()
-    print("脚本版本v3.2 2026/1/3")
+    print("脚本版本v3.3 2026/2/3")
     -- local componentList = component.list() -- 这个函数返回一个迭代器用于遍历所有可用组件地址、名称，
     print("全设备地址")
     for address, name in component.list() do -- 循环遍历所有组件，此处的list()支持两个额外参数，第一个是过滤字符串，第二个是是否精确匹配，例如component.list("red",true)
@@ -102,17 +101,23 @@ function init()
     end
 
     if not component.isAvailable("redstone") then
-        is_Redstone_mode = false
+        is_Redstone_mode = 0
         print("未连接红石卡，关闭红石模式")
     else
         redstone = component.redstone -- 获取所连接的红石卡
-        redstone.setWirelessFrequency(wireless)
-        if redstone then
-            print("红石卡组件地址:")
-            print(redstone.address)
+        if wireless == 0 then
+            is_Redstone_mode = 1
+            print("无线红石频率为0，仅保留触发模式")
         else
-            print("未连接红石卡")
-            os.exit()
+            redstone.setWirelessFrequency(wireless)
+            is_Redstone_mode = 2
+            if redstone then
+                print("红石卡组件地址:")
+                print(redstone.address)
+            else
+                print("未连接红石卡")
+                os.exit()
+            end
         end
     end
 
@@ -136,7 +141,7 @@ function init()
 
 end
 function redstoneWork(mode)
-    if is_Redstone_mode then
+    if is_Redstone_mode == 2 then
         if mode then
             redstone.setWirelessOutput(true)
             now_redstone_state = true
@@ -157,7 +162,7 @@ function craftItem(item_label, quantity)
 
     if (cpu_num == 1) then
         while me_controller.getCpus()[1].busy do
-            print("ME合成器忙碌中，等待3秒...")
+            print("ME合成器忙碌中，等待10秒...")
             os.sleep(3)
         end
     else
@@ -178,8 +183,8 @@ function craftItem(item_label, quantity)
                     end
                 end
             end
-            print("ME合成器全部忙碌中，等待3秒...")
-            os.sleep(3)
+            print("ME合成器全部忙碌中，等待10秒...")
+            os.sleep(10)
         end
     end
     ::craft_start::
@@ -190,10 +195,10 @@ function craftItem(item_label, quantity)
         try_times = try_times - 1
         print("请求合成物品: " .. item_label .. " 数量: " .. quantity)
         craft = Craftables[1].request(quantity)
-        os.sleep(0.05)
+        os.sleep(3)
         while craft.isComputing() do
-            print("合成计算中，等待1秒...")
-            os.sleep(1)
+            print("合成计算中，等待3秒...")
+            os.sleep(3)
         end
 
         if craft.hasFailed() then
@@ -223,8 +228,8 @@ function craftItem(item_label, quantity)
                     print("合成被取消，结束等待")
                     break
                 end
-                print("合成未完成，等待3秒...")
-                os.sleep(3)
+                print("合成未完成，等待10秒...")
+                os.sleep(10)
             else
                 print("合成已完成")
                 break
@@ -269,6 +274,7 @@ function check_diamond_chest()
             return -- 如果当前槽位为空，结束检查
         end
         print("------")
+        os.sleep(3)
     end
     print("结束本次检查")
     gpu.setForeground(0xFF0000)
@@ -343,13 +349,17 @@ function main()
         print("激爽下班")
         t = waitMins -- 设置等待时间，单位为分钟
         print("等待" .. waitMins .. "分钟后再次检查")
+        last_redstone_state = false
+        if is_Redstone_mode > 0 then
+            last_redstone_state = redstone.getInput(sides.front)
+        end
         while t > 0 do
 
-            if cpu_num > 1  and now_redstone_state then -- 多cpu模式下扫描工作
+            if cpu_num > 1 and now_redstone_state then -- 多cpu模式下扫描工作
                 local busy_flag = false
                 for _, cpu in ipairs(me_controller.getCpus()) do
                     if cpu.busy then
-                        busy_flag=true
+                        busy_flag = true
                         break
                     end
                 end
@@ -357,7 +367,13 @@ function main()
                     redstoneWork(false)
                 end
             end
-
+            if is_Redstone_mode > 0 then
+                if not redstone.getInput(sides.front) == last_redstone_state then
+                    last_redstone_state = redstone.getInput(sides.front)
+                    print("检测到前方红石信号，提前结束等待")
+                    goto continue
+                end
+            end
             print("倪哥正在快乐摸鱼，还有" .. t .. "分钟上班")
             t = t - 1
             os.sleep(60)
