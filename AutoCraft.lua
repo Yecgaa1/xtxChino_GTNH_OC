@@ -195,7 +195,7 @@ function craftItem(item_label, quantity)
         try_times = try_times - 1
         print("请求合成物品: " .. item_label .. " 数量: " .. quantity)
         craft = Craftables[1].request(quantity)
-        os.sleep(2)
+        os.sleep(1)
         while craft.isComputing() do
             print("合成计算中，等待2秒...")
             os.sleep(2)
