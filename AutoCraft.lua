@@ -65,7 +65,7 @@ local function load_config(filename)
 end
 
 function init()
-    print("脚本版本v3.3 2026/2/3")
+    print("脚本版本v3.5 2026/2/3")
     -- local componentList = component.list() -- 这个函数返回一个迭代器用于遍历所有可用组件地址、名称，
     print("全设备地址")
     for address, name in component.list() do -- 循环遍历所有组件，此处的list()支持两个额外参数，第一个是过滤字符串，第二个是是否精确匹配，例如component.list("red",true)
@@ -195,10 +195,10 @@ function craftItem(item_label, quantity)
         try_times = try_times - 1
         print("请求合成物品: " .. item_label .. " 数量: " .. quantity)
         craft = Craftables[1].request(quantity)
-        os.sleep(3)
+        os.sleep(2)
         while craft.isComputing() do
-            print("合成计算中，等待3秒...")
-            os.sleep(3)
+            print("合成计算中，等待2秒...")
+            os.sleep(2)
         end
 
         if craft.hasFailed() then
@@ -207,11 +207,14 @@ function craftItem(item_label, quantity)
                 print("多次尝试合成失败，放弃本次合成请求")
                 return
             else
-                quantity = math.ceil(quantity / 2)
-                if quantity < lowest_order_quantity and begin_quantity > lowest_order_quantity then
+                if quantity <= lowest_order_quantity and begin_quantity > lowest_order_quantity then
                     print("合成数量已低于最低合成请求数量: " .. lowest_order_quantity ..
                               "，放弃本次合成请求")
                     return
+                end
+                quantity = math.ceil(quantity / 4)
+                if quantity < lowest_order_quantity then
+                    quantity = lowest_order_quantity
                 end
                 print("尝试减少合成数量至: " .. quantity .. " 后重新请求")
             end
