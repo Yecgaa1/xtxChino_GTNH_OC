@@ -6,7 +6,7 @@ is_Redstone_mode = 2 -- 是否存在红石控制
 isWork = false
 cpu_num = 1
 now_redstone_state = false
-rework=true
+rework=false
 -- 定义配置文件名
 local CONFIG_FILE = "config.lua"
 
@@ -396,3 +396,4 @@ function main()
 end
 
 main()
+
