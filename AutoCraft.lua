@@ -65,7 +65,7 @@ local function load_config(filename)
 end
 
 function init()
-    print("脚本版本v3.5 2026/2/3")
+    print("脚本版本v3.6 2026/2/11")
     -- local componentList = component.list() -- 这个函数返回一个迭代器用于遍历所有可用组件地址、名称，
     print("全设备地址")
     for address, name in component.list() do -- 循环遍历所有组件，此处的list()支持两个额外参数，第一个是过滤字符串，第二个是是否精确匹配，例如component.list("red",true)
@@ -212,6 +212,7 @@ function craftItem(item_label, quantity)
                     if quantity <= lowest_order_quantity then
                         print("合成数量已低于最低合成请求数量: " .. lowest_order_quantity ..
                             "，放弃本次合成请求")
+                        os.sleep(1)
                         return
                     end
                     quantity = math.ceil(quantity / 4)
@@ -222,6 +223,7 @@ function craftItem(item_label, quantity)
                 else
                     if quantity <= 1 then
                         print("合成数量已减至1，放弃本次合成请求")
+                        os.sleep(1)
                         return
                     end
                     quantity = math.ceil(quantity / 4)
@@ -249,6 +251,7 @@ function craftItem(item_label, quantity)
         end
     else
         print("多CPU模式下，合成请求已提交，继续下一任务")
+        os.sleep(3)
     end
 end
 
@@ -286,7 +289,6 @@ function check_diamond_chest()
             return -- 如果当前槽位为空，结束检查
         end
         print("------")
-        os.sleep(3)
     end
     print("结束本次检查")
     gpu.setForeground(0xFF0000)
@@ -393,3 +395,4 @@ function main()
 end
 
 main()
+
