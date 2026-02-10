@@ -10,15 +10,15 @@ now_redstone_state = false
 local CONFIG_FILE = "config.lua"
 
 -- 定义默认配置内容
-local DEFAULT_CONFIG = [[sides = require("sides")-- 配置文件版本号 
-config_version = "v2" -- 应用设置 
-wireless = 0; -- 无线红石频率 
-waitMins = 5; -- 默认等待时间，单位为分钟 
-gold_chest_multiple = 100; -- 黄金箱子物品维持库存倍数 
-diamond_chest_multiple = 10000; -- 钻石箱子物品维持库存倍数 
-try_times_half = 10; -- 合成失败后尝试减半数量重新请求的次数 
-gold_chest_side = sides.bottom -- 金箱子连接在传送器的底部 
-diamond_chest_side = sides.up -- 钻石箱子连接在传送器的底部 
+local DEFAULT_CONFIG = [[sides = require("sides")-- 配置文件版本号
+config_version = "v2" -- 应用设置
+wireless = 0; -- 无线红石频率
+waitMins = 5; -- 默认等待时间，单位为分钟
+gold_chest_multiple = 100; -- 黄金箱子物品维持库存倍数
+diamond_chest_multiple = 10000; -- 钻石箱子物品维持库存倍数
+try_times_half = 10; -- 合成失败后尝试减半数量重新请求的次数
+gold_chest_side = sides.bottom -- 金箱子连接在传送器的底部
+diamond_chest_side = sides.up -- 钻石箱子连接在传送器的底部
 lowest_order_quantity = 1000 -- 最低合成请求数量 ]]
 
 -- 检查并创建配置文件的函数
@@ -138,8 +138,8 @@ function init()
     -- end
 
     print("脚本初始化完成")
-
 end
+
 function redstoneWork(mode)
     if is_Redstone_mode == 2 then
         if mode then
@@ -151,6 +151,7 @@ function redstoneWork(mode)
         end
     end
 end
+
 function craftItem(item_label, quantity)
     local Craftables = me_controller.getCraftables({
         label = item_label
@@ -207,16 +208,24 @@ function craftItem(item_label, quantity)
                 print("多次尝试合成失败，放弃本次合成请求")
                 return
             else
-                if quantity <= lowest_order_quantity and begin_quantity > lowest_order_quantity then
-                    print("合成数量已低于最低合成请求数量: " .. lowest_order_quantity ..
-                              "，放弃本次合成请求")
-                    return
+                if begin_quantity > lowest_order_quantity then
+                    if quantity <= lowest_order_quantity then
+                        print("合成数量已低于最低合成请求数量: " .. lowest_order_quantity ..
+                            "，放弃本次合成请求")
+                        return
+                    end
+                    quantity = math.ceil(quantity / 4)
+                    if quantity < lowest_order_quantity then
+                        quantity = lowest_order_quantity
+                    end
+                    print("尝试减少合成数量至: " .. quantity .. " 后重新请求")
+                else
+                    if quantity <= 1 then
+                        print("合成数量已减至1，放弃本次合成请求")
+                        return
+                    end
+                    quantity = math.ceil(quantity / 4)
                 end
-                quantity = math.ceil(quantity / 4)
-                if quantity < lowest_order_quantity then
-                    quantity = lowest_order_quantity
-                end
-                print("尝试减少合成数量至: " .. quantity .. " 后重新请求")
             end
         else
             break
@@ -253,7 +262,7 @@ function check_diamond_chest()
             local item_label = item.label
             local item_count = item.size
             print("检测到钻石箱子中第" .. slot .. "格子的物品: " .. item_label .. " 数量: " ..
-                      item_count .. " 意味着需要维持库存: " .. item_count * diamond_chest_multiple)
+                item_count .. " 意味着需要维持库存: " .. item_count * diamond_chest_multiple)
             local stored_items = me_interface.getItemsInNetwork({
                 label = item_label
             })
@@ -294,7 +303,7 @@ function check_gold_chest()
             local item_count = item.size
             print(
                 "检测到金箱子中第" .. slot .. "格子的物品: " .. item_label .. " 数量: " .. item_count ..
-                    " 意味着需要维持库存: " .. item_count * gold_chest_multiple)
+                " 意味着需要维持库存: " .. item_count * gold_chest_multiple)
             local stored_items = me_interface.getItemsInNetwork({
                 label = item_label
             })
@@ -357,7 +366,6 @@ function main()
             last_redstone_state = redstone.getInput(sides.front)
         end
         while t > 0 do
-
             if cpu_num > 1 and now_redstone_state then -- 多cpu模式下扫描工作
                 local busy_flag = false
                 for _, cpu in ipairs(me_controller.getCpus()) do
@@ -385,4 +393,3 @@ function main()
 end
 
 main()
-
