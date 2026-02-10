@@ -6,6 +6,7 @@ is_Redstone_mode = 2 -- 是否存在红石控制
 isWork = false
 cpu_num = 1
 now_redstone_state = false
+rework=true
 -- 定义配置文件名
 local CONFIG_FILE = "config.lua"
 
@@ -356,7 +357,7 @@ function main()
         end
 
         gpu.setForeground(0xFF0000)
-        if isWork then
+        if isWork and rework then
             print("本次有工作，继续下次检查")
             goto continue
         end
@@ -395,4 +396,3 @@ function main()
 end
 
 main()
-
