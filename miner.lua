@@ -4,7 +4,7 @@ local component = require("component")
 local sleepTime = 120 --检测间隔（秒）
 local pumpBatch = 64  --此处可设置所有钻机批处理数。设为nil时关闭自动设置。
 local allowRandomMine = false
-local version = "2.0"
+local version = "2.1"
 
 local pumps = {}
 local miners = {}
@@ -284,10 +284,10 @@ while true do
                 print("==================================\n正在调整全部矿机至：", targets.items[itemIdx].displayName, "参数：",
                     itemPara)
                 --检查无人机等级配方
-                changeDrone(itemPara // 10000000)
+                changeDrone(itemPara // 100000000)
                 stopMachine(miners)
-                adjustParameters(miners, 0, 0, (itemPara // 10000) % 1000)   --距离
-                adjustParameters(miners, 1, 0, (itemPara % 10000) / 1000)    --OD参数
+                adjustParameters(miners, 0, 0, (itemPara // 100000) % 1000)   --距离
+                adjustParameters(miners, 1, 0, (itemPara % 100000) / 10000)    --OD参数
                 for _, miner in ipairs(miners) do miner.setWorkAllowed(true) end --重启
                 preItemPara = itemPara
             end
