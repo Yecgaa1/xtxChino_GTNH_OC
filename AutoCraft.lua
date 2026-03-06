@@ -14,7 +14,7 @@ local CONFIG_FILE = "config.lua"
 local DEFAULT_CONFIG = [[sides = require("sides")-- 配置文件版本号
 config_version = "v2" -- 应用设置
 wireless = 0; -- 无线红石频率
-waitMins = 5; -- 默认等待时间，单位为分钟
+waitMins = 15; -- 默认等待时间，单位为分钟
 gold_chest_multiple = 100; -- 黄金箱子物品维持库存倍数
 diamond_chest_multiple = 10000; -- 钻石箱子物品维持库存倍数
 try_times_half = 10; -- 合成失败后尝试减半数量重新请求的次数
@@ -66,7 +66,7 @@ local function load_config(filename)
 end
 
 function init()
-    print("脚本版本v3.6 2026/2/11")
+    print("脚本版本v3.7 2026/3/7")
     -- local componentList = component.list() -- 这个函数返回一个迭代器用于遍历所有可用组件地址、名称，
     print("全设备地址")
     for address, name in component.list() do -- 循环遍历所有组件，此处的list()支持两个额外参数，第一个是过滤字符串，第二个是是否精确匹配，例如component.list("red",true)
@@ -169,22 +169,27 @@ function craftItem(item_label, quantity)
         end
     else
         while true do
+            -- 首先遍历所有 CPU，检查是否有任何一个正在合成该物品
             for _, cpu in ipairs(me_controller.getCpus()) do
-                if not cpu.busy then
-                    goto craft_start
-                else
-                    -- 安全地尝试获取 finalOutput 的返回值
+                if cpu.busy then
                     local ok, result = pcall(function()
                         return cpu.cpu.finalOutput().label
                     end)
-
-                    -- 如果调用成功且 result 不为 nil，再访问其属性
                     if ok and result == item_label then
                         print("检测到已有CPU正在合成相同物品，跳过本次合成请求")
                         return
                     end
                 end
             end
+            
+            -- 然后检查是否有空闲的 CPU
+            for _, cpu in ipairs(me_controller.getCpus()) do
+                if not cpu.busy then
+                    goto craft_start
+                end
+            end
+            
+            -- 没有空闲 CPU，等待
             print("ME合成器全部忙碌中，等待10秒...")
             os.sleep(10)
         end
@@ -396,4 +401,5 @@ function main()
 end
 
 main()
+
 
