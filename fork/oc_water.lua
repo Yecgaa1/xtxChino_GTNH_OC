@@ -1,62 +1,9 @@
--- v3.0 2026/3/13 fork
+-- v3.1 2026/3/16 fork
 local component = require("component")
 local sides = require("sides")
 local os = require("os")
 local io = require("io")
  
-local CONFIG = {
-    POWER_SWITCH_PORT = sides.west,
-    TOTAL_POWER = 0,
-    CACHED_CONFIG = {},
-    CACHED_LEVELS = {},
-    LAST_PLANT_STATUS = nil,
-    SYSTEM_EMERGENCY_STOPPED = false,
-    LAST_ACTIVE_LEVEL = nil,
-    CHECK_INTERVAL_STOPPED = 5,
-    CHECK_INTERVAL_RUNNING = 20,
-    IS_PLANT_SHUTDOWN_FROM_RUNNING = false,
-    
-    -- 核心：存储程序计算出的参数，后续逻辑全程使用这些数值
-    CALCULATED = {
-        SUGGEST_SINGLE_PARALLEL = {}, -- 程序算出的单台建议并行数（即用户设置值）
-        SINGLE_MACHINE_POWER = {},     -- 单台机器按建议并行运行的功耗
-        LEVEL_TOTAL_POWER = {},         -- 该等级所有机器按建议并行全开的总功耗
-        LEVEL_TOTAL_PARALLEL = {}       -- 该等级总并行数
-    }
-}
- 
-local machines = {}
-for level = 0, 8 do machines[level] = { proxies = {} } end
-local MACHINE_SCAN_RESULT = {}
- 
-local MAX_SINGLE_PARALLEL = 2147484 -- 仅用于计算建议值的硬件上限
-local POWER_LEVELS = {
-    [1] = 30720, [2] = 30720, [3] = 122880, [4] = 122880,
-    [5] = 491520, [6] = 491520, [7] = 1966080, [8] = 7864320
-}
- 
-local FLUID_NAMES = {
-    [1] = "grade1purifiedwater", [2] = "grade2purifiedwater",
-    [3] = "grade3purifiedwater", [4] = "grade4purifiedwater",
-    [5] = "grade5purifiedwater", [6] = "grade6purifiedwater",
-    [7] = "grade7purifiedwater", [8] = "grade8purifiedwater"
-}
- 
-local MACHINE_NAMES = {
-    ["multimachine.purificationplant"] = 0,
-    ["multimachine.purificationunitclarifier"] = 1,
-    ["multimachine.purificationunitozonation"] = 2,
-    ["multimachine.purificationunitflocculator"] = 3,
-    ["multimachine.purificationunitphadjustment"] = 4,
-    ["multimachine.purificationunitplasmaheater"] = 5,
-    ["multimachine.purificationunituvtreatment"] = 6,
-    ["multimachine.purificationunitdegasifier"] = 7,
-    ["multimachine.purificationunitextractor"] = 8
-}
- 
--- ============================================================================
--- 工具函数
--- ============================================================================
 local function clearScreen()
     os.execute(string.find(os.getenv("OS") or "", "Windows") and "cls" or "clear")
 end
@@ -100,9 +47,95 @@ local function getFluidAmount(fluidName)
     return 0
 end
  
--- ============================================================================
--- 扫描与初始化 (核心：计算并存档所有运行参数)
--- ============================================================================
+local VOLTAGE_NAME_COLOR = "\27[35m"
+local SCREEN_RESET_COLOR = "\27[37m"
+local SCREEN_GREEN_COLOR = "\27[32m"
+local SCREEN_RED_COLOR = "\27[31m"
+local MAX_VOLTAGE_VALUE = 2147483640
+local GT_SHOW_LOWER_TIER = 4
+local VOLTAGE_NAMES_NO_COLOR = {
+    "ULV", "LV", "MV", "HV", "EV", "IV",
+    "LUV", "ZPM", "UV", "UHV", "UEV", "UIV", "UMV","UXV"
+}
+local MAX_VOLTAGE_NAME_NO_COLOR = "MAX"
+local VOLTAGE_NAMES_COLORED = {}
+local MAX_VOLTAGE_NAME_COLORED = VOLTAGE_NAME_COLOR .. MAX_VOLTAGE_NAME_NO_COLOR .. SCREEN_RESET_COLOR
+for _, name in ipairs(VOLTAGE_NAMES_NO_COLOR) do
+    table.insert(VOLTAGE_NAMES_COLORED, VOLTAGE_NAME_COLOR .. name .. SCREEN_RESET_COLOR)
+end
+ 
+---@param euPerTick number 输入的EU/t功率值
+---@param withColor? boolean 是否带颜色显示，默认true
+---@return string 格式化后的「电流A 电压等级」字符串
+local function getGTInfo(euPerTick, withColor)
+    withColor = withColor == nil or withColor
+    local voltageNames = withColor and VOLTAGE_NAMES_COLORED or VOLTAGE_NAMES_NO_COLOR
+    local maxVoltageName = withColor and MAX_VOLTAGE_NAME_COLORED or MAX_VOLTAGE_NAME_NO_COLOR
+    if euPerTick == 0 then
+        return "0A " .. voltageNames[1]
+    end
+    local absValue = math.abs(euPerTick)
+    local voltage_for_tier = absValue / 2 / (4 ^ GT_SHOW_LOWER_TIER)
+    if absValue >= MAX_VOLTAGE_VALUE then
+        return string.format("%sA "..maxVoltageName, formatNumber(absValue/MAX_VOLTAGE_VALUE))
+    end
+    local tier = voltage_for_tier < 4 and 1 or math.floor(math.log(voltage_for_tier) / math.log(4))
+    tier = math.max(1, math.min(tier, #voltageNames))
+    if tier > #VOLTAGE_NAMES_NO_COLOR then
+        return string.format("%sA "..maxVoltageName, formatNumber(absValue/MAX_VOLTAGE_VALUE))
+    end
+    local baseVoltage = 8 * (4 ^ (tier - 1))
+    local current = absValue / baseVoltage
+    return string.format("%.0fA %s", current, voltageNames[tier])
+end
+ 
+local CONFIG = {
+    POWER_SWITCH_PORT = sides.west,
+    TOTAL_POWER = 0,
+    CACHED_CONFIG = {},
+    CACHED_LEVELS = {},
+    LAST_PLANT_STATUS = nil,
+    SYSTEM_EMERGENCY_STOPPED = false,
+    LAST_ACTIVE_LEVEL = nil,
+    CHECK_INTERVAL_STOPPED = 5,
+    CHECK_INTERVAL_RUNNING = 20,
+    IS_PLANT_SHUTDOWN_FROM_RUNNING = false,
+    CALCULATED = {
+        SUGGEST_SINGLE_PARALLEL = {},
+        SINGLE_MACHINE_POWER = {},
+        LEVEL_TOTAL_POWER = {},
+        LEVEL_TOTAL_PARALLEL = {}
+    }
+}
+ 
+local machines = {}
+for level = 0, 8 do machines[level] = { proxies = {} } end
+local MACHINE_SCAN_RESULT = {}
+local MAX_SINGLE_PARALLEL = 2147484
+ 
+local POWER_LEVELS = {
+    [1] = 30720, [2] = 30720, [3] = 122880, [4] = 122880,
+    [5] = 491520, [6] = 491520, [7] = 1966080, [8] = 7864320
+}
+ 
+local FLUID_NAMES = {
+    [1] = "grade1purifiedwater", [2] = "grade2purifiedwater",
+    [3] = "grade3purifiedwater", [4] = "grade4purifiedwater",
+    [5] = "grade5purifiedwater", [6] = "grade6purifiedwater",
+    [7] = "grade7purifiedwater", [8] = "grade8purifiedwater"
+}
+ 
+local MACHINE_NAMES = {
+    ["multimachine.purificationplant"] = 0,
+    ["multimachine.purificationunitclarifier"] = 1,
+    ["multimachine.purificationunitozonation"] = 2,
+    ["multimachine.purificationunitflocculator"] = 3,
+    ["multimachine.purificationunitphadjustment"] = 4,
+    ["multimachine.purificationunitplasmaheater"] = 5,
+    ["multimachine.purificationunituvtreatment"] = 6,
+    ["multimachine.purificationunitdegasifier"] = 7,
+    ["multimachine.purificationunitextractor"] = 8
+}
  
 local function scanAndCalculateTotalPower()
     local totalPower = 0
@@ -112,10 +145,13 @@ local function scanAndCalculateTotalPower()
         if not proxy then goto continue end
         local success, machineName = pcall(proxy.getName)
         if not success then goto continue end
- 
         if machineName:find("hatch.energytunnel") then
             local maxStored = proxy.getEUCapacity()
             totalPower = totalPower + math.floor(maxStored / 24)
+            hasValidEnergyHatch = true
+        elseif machineName:find("hatch.energywirelesstunnel") then
+            local maxStored = proxy.getEUCapacity()
+            totalPower = totalPower + math.floor(maxStored / 4000)
             hasValidEnergyHatch = true
         elseif machineName:find("hatch.energymulti") or machineName:find("hatch.energywirelessmulti") then
             local multiNumStr = machineName:match("tier.(%d+)") or machineName:match("multi(%d+)")
@@ -138,7 +174,6 @@ local function loadCacheConfigFromRequesters()
         local proxy = component.proxy(address)
         if proxy then table.insert(levelMaintainers, proxy) end
     end
- 
     local cacheSlots = {}
     for _, maintainer in ipairs(levelMaintainers) do
         for slot = 2, 5 do
@@ -153,7 +188,6 @@ local function loadCacheConfigFromRequesters()
             end
         end
     end
- 
     CONFIG.CACHED_LEVELS = {}
     for level = 1, 8 do
         local slotInfo = cacheSlots[level]
@@ -167,26 +201,20 @@ local function loadCacheConfigFromRequesters()
     return true
 end
  
--- 【核心修复】计算并存储所有等级的运行参数，全程使用此结果
 local function calculateAndSaveLevelParams()
     for level = 1, 8 do
         local deployedCount = #machines[level].proxies
         local powerPerParallel = POWER_LEVELS[level]
         
         if deployedCount > 0 and powerPerParallel and powerPerParallel > 0 then
-            -- 1. 计算系统总功率允许的总并行上限
             local systemMaxTotalParallel = math.floor(CONFIG.TOTAL_POWER / powerPerParallel)
             
-            -- 2. 计算建议单台并行数（总上限 / 机器数，且不超过硬件上限）
             local suggestSingleParallel = math.floor(systemMaxTotalParallel / deployedCount)
             suggestSingleParallel = math.min(suggestSingleParallel, MAX_SINGLE_PARALLEL)
             
-            -- 3. 基于建议并行数，计算单台功耗和该等级总功耗
             local singleMachinePower = powerPerParallel * suggestSingleParallel
             local levelTotalPower = deployedCount * singleMachinePower
             local levelTotalParallel = deployedCount * suggestSingleParallel
- 
-            -- 4. 存入全局配置，后续所有逻辑直接读取这里
             CONFIG.CALCULATED.SUGGEST_SINGLE_PARALLEL[level] = suggestSingleParallel
             CONFIG.CALCULATED.SINGLE_MACHINE_POWER[level] = singleMachinePower
             CONFIG.CALCULATED.LEVEL_TOTAL_POWER[level] = levelTotalPower
@@ -200,13 +228,12 @@ local function calculateAndSaveLevelParams()
     end
 end
  
--- 等级详情查看界面
 local function selectLevelForDetail()
     while true do
         clearScreen()
         printSystemTitle()
         print("\n================================ 等级选择 ================================")
-        print(string.format("系统总可用功率：%s EU/t", formatNumber(CONFIG.TOTAL_POWER)))
+        print(string.format("系统总可用功率：%s EU/t (%s)", formatNumber(CONFIG.TOTAL_POWER), getGTInfo(CONFIG.TOTAL_POWER)))
         print(string.format("单台机器最大并行上限：%s", formatNumber(MAX_SINGLE_PARALLEL)))
         print("\n操作说明：")
         print("   1. 输入 1-8 查看对应等级详细配置与并行设置建议")
@@ -225,14 +252,17 @@ local function selectLevelForDetail()
             if deployedCount > 0 and powerPerParallel > 0 then
                 local calc = CONFIG.CALCULATED
                 print(string.format("已部署机器数量：%d 台", deployedCount))
-                print(string.format("单并行功耗：%s EU/t", formatNumber(powerPerParallel)))
+                print(string.format("单并行功耗：%s EU/t (%s)", formatNumber(powerPerParallel), getGTInfo(powerPerParallel)))
                 print(string.format("单台机器最大并行上限：%s", formatNumber(MAX_SINGLE_PARALLEL)))
                 print(string.format("系统总功率允许的总并行上限：%s", formatNumber(math.floor(CONFIG.TOTAL_POWER / powerPerParallel))))
                 print("----------------------------------------------------------------------")
                 print(string.format("✅ **建议每台设置并行数：%s**", formatNumber(calc.SUGGEST_SINGLE_PARALLEL[level])))
-                print(string.format("   （按此设置后，单台功耗：%s EU/t，该等级全开总功耗：%s EU/t）", 
-                    formatNumber(calc.SINGLE_MACHINE_POWER[level]), 
-                    formatNumber(calc.LEVEL_TOTAL_POWER[level])))
+                print(string.format("   （按此设置后，单台功耗：%s EU/t (%s)）", 
+                    formatNumber(calc.SINGLE_MACHINE_POWER[level]),
+                    getGTInfo(calc.SINGLE_MACHINE_POWER[level])))
+                print(string.format("   （该等级全开总功耗：%s EU/t (%s)）", 
+                    formatNumber(calc.LEVEL_TOTAL_POWER[level]),
+                    getGTInfo(calc.LEVEL_TOTAL_POWER[level])))
             else
                 print(string.format("T%d级净水单元：未部署有效机器", level))
             end
@@ -277,7 +307,6 @@ local function initializeMachinesAndPower()
     MACHINE_SCAN_RESULT.total = totalMachine
     MACHINE_SCAN_RESULT.host = #machines[0].proxies
     MACHINE_SCAN_RESULT.units = levelMachineCount
- 
     local hasValidEnergy, totalPower = scanAndCalculateTotalPower()
     
     clearScreen()
@@ -290,20 +319,14 @@ local function initializeMachinesAndPower()
         local count = MACHINE_SCAN_RESULT.units[level] or 0
         print(string.format("  T%d级：%d 台", level, count))
     end
- 
     print("\n供能系统：")
     if hasValidEnergy then
-        print(string.format("  系统总可用功率：%s EU/t", formatNumber(totalPower)))
+        print(string.format("  系统总可用功率：%s EU/t (%s)", formatNumber(totalPower), getGTInfo(totalPower)))
     else
         print("  错误：未检测到任何有效供能方块！")
     end
- 
     return hasValidEnergy
 end
- 
--- ============================================================================
--- 核心逻辑：全程使用 CONFIG.CALCULATED 中的数据
--- ============================================================================
  
 function isWaterPlantRunning()
     local plantProxies = machines[0].proxies
@@ -333,7 +356,6 @@ local function getLowestShortageLevel()
     return shortageLevels[1]
 end
  
--- 原料检查：使用计算出的总并行数
 local function checkMaterialSufficient(targetLevel)
     if targetLevel == 1 then return true end
     local inputLevel = targetLevel - 1
@@ -355,26 +377,22 @@ local function isLevelInShortage(level)
     return current < (cfg.threshold or 0)
 end
  
--- 功率分配：使用计算出的等级总功耗
 local function calculateMultiLevelAllocation(lowestLevel)
     local allocation = {}
     local remainingPower = CONFIG.TOTAL_POWER
- 
     if not lowestLevel then return {} end
     
     local lowestLevelPower = CONFIG.CALCULATED.LEVEL_TOTAL_POWER[lowestLevel] or 0
     local machineCount = #machines[lowestLevel].proxies
     
     if lowestLevelPower == 0 or machineCount == 0 then return {} end
- 
-    -- 第一步：满足最低缺水等级全开（功耗按计算值算）
     if lowestLevelPower > remainingPower then
         return {}
     end
     allocation[lowestLevel] = true
     remainingPower = remainingPower - lowestLevelPower
- 
-    -- 第二步：剩余功率向下轮询
+    
+    -- 向下轮询：给当前最低等级供料，此环节保留库存检查
     if remainingPower > 0 then
         local currentCheckLevel = lowestLevel - 1
         while currentCheckLevel >= 1 do
@@ -390,22 +408,22 @@ local function calculateMultiLevelAllocation(lowestLevel)
             currentCheckLevel = currentCheckLevel - 1
         end
     end
- 
-    -- 第三步：剩余功率向上轮询
+    
+    -- 向上轮询：低级已在生产，默认原料持续供应，不检查上一级库存
     if remainingPower > 0 then
         for level = lowestLevel + 1, 8 do
             local levelPower = CONFIG.CALCULATED.LEVEL_TOTAL_POWER[level] or 0
             local count = #machines[level].proxies
             
+            -- 仅检查：该等级有机器、电量足够、且该等级本身缺水
             if levelPower > 0 and count > 0 and levelPower <= remainingPower then
-                if isLevelInShortage(level) and checkMaterialSufficient(level) then
+                if isLevelInShortage(level) then
                     allocation[level] = true
                     remainingPower = remainingPower - levelPower
                 end
             end
         end
     end
- 
     return allocation
 end
  
@@ -435,14 +453,12 @@ local function startProductionByAllocation(allocationPlan)
     if CONFIG.SYSTEM_EMERGENCY_STOPPED or not allocationPlan then
         return false
     end
- 
     for level = 1, 8 do
         local shouldEnable = allocationPlan[level] == true
         for _, machine in ipairs(machines[level].proxies) do
             pcall(machine.setWorkAllowed, shouldEnable)
         end
     end
- 
     CONFIG.LAST_ACTIVE_LEVEL = allocationPlan
     return true
 end
@@ -463,7 +479,6 @@ local function monitorPlantStatus()
     return currentStatus
 end
  
--- 【核心优化】按需求修改了状态显示逻辑
 local function printCacheWaterStatus()
     print("\n==================== 缓存水量状态 ====================")
     for _, level in ipairs(CONFIG.CACHED_LEVELS) do
@@ -475,19 +490,15 @@ local function printCacheWaterStatus()
         local percentage = expected > 0 and (current / expected) * 100 or 0
         local percentStr = string.format("(%.1f%%)", percentage)
         
-        -- 优先判断是否在生产中，再显示对应状态
         if isOn then
             if current < expected then
-                -- 生产中且库存未达标，保留缺料提示
                 print(string.format("T%d级水：目标 %s mB | 当前 %s mB | 库存不足 %s 【生产中】", 
                     level, formatNumber(expected), formatNumber(current), percentStr))
             else
-                -- 生产中但库存已达标，改为补充备货提示，替代原有的库存充足
                 print(string.format("T%d级水：目标 %s mB | 当前 %s mB | 补充备货 %s 【生产中】", 
                     level, formatNumber(expected), formatNumber(current), percentStr))
             end
         else
-            -- 未生产的等级，保留原有库存状态
             if current < expected then
                 print(string.format("T%d级水：目标 %s mB | 当前 %s mB | 库存不足 %s", 
                     level, formatNumber(expected), formatNumber(current), percentStr))
@@ -513,12 +524,14 @@ local function printFullSystemStatus()
             if CONFIG.LAST_ACTIVE_LEVEL[level] then
                 local power = CONFIG.CALCULATED.LEVEL_TOTAL_POWER[level] or 0
                 totalPowerUsed = totalPowerUsed + power
-                print(string.format("  T%d级：开启 (预计耗电 %s EU/t)", level, formatNumber(power)))
+                print(string.format("  T%d级：开启 (预计耗电 %s EU/t | %s)", 
+                    level, formatNumber(power), getGTInfo(power)))
             end
         end
         local usagePercent = CONFIG.TOTAL_POWER > 0 and (totalPowerUsed / CONFIG.TOTAL_POWER) * 100 or 0
-        print(string.format("  总功率预计：%s / %s EU/t (%.1f%%)", 
-            formatNumber(totalPowerUsed), formatNumber(CONFIG.TOTAL_POWER), usagePercent))
+        print(string.format("  总功率预计：%s / %s EU/t (%.1f%%) | %s", 
+            formatNumber(totalPowerUsed), formatNumber(CONFIG.TOTAL_POWER), usagePercent,
+            getGTInfo(totalPowerUsed)))
     else
         print("已开启机器：无")
     end
@@ -534,7 +547,6 @@ local function initialize()
     end
     CONFIG.LAST_ACTIVE_LEVEL = nil
     
-    -- 确保参数已计算
     calculateAndSaveLevelParams()
     
     local initAllocation = nil
@@ -554,15 +566,22 @@ local function initialize()
     print(string.format("初始主机状态：%s", CONFIG.LAST_PLANT_STATUS and "运行中" or "已停机"))
     if initAllocation and next(initAllocation) then
         print("初始生产分配：")
+        local totalPowerUsed = 0
         for level = 8, 1, -1 do
             if initAllocation[level] then
-                print(string.format("  T%d级：开启", level))
+                local power = CONFIG.CALCULATED.LEVEL_TOTAL_POWER[level] or 0
+                totalPowerUsed = totalPowerUsed + power
+                print(string.format("  T%d级：开启 (预计耗电 %s EU/t | %s)", 
+                    level, formatNumber(power), getGTInfo(power)))
             end
         end
+        local usagePercent = CONFIG.TOTAL_POWER > 0 and (totalPowerUsed / CONFIG.TOTAL_POWER) * 100 or 0
+        print(string.format("  计划总耗电：%s / %s EU/t (%.1f%%) | %s", 
+            formatNumber(totalPowerUsed), formatNumber(CONFIG.TOTAL_POWER), usagePercent,
+            getGTInfo(totalPowerUsed)))
     else
         print("初始状态：所有净水单元关闭")
     end
- 
     waitForUserInput("系统初始化完成，是否进入主监控程序？")
 end
  
@@ -627,9 +646,7 @@ local function main()
         os.execute("sleep 3")
         return
     end
- 
     loadCacheConfigFromRequesters()
-    -- 【关键】在进入配置界面前，先把所有参数算好
     calculateAndSaveLevelParams()
     
     waitForUserInput("机器扫描完成，是否继续进入配置查看环节？")
@@ -643,7 +660,6 @@ local function main()
         #CONFIG.CACHED_LEVELS))
     
     waitForUserInput("配置加载完成，确认继续？")
- 
     initialize()
     mainLoop()
 end
