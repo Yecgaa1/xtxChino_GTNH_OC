@@ -22,6 +22,24 @@ gold_chest_side = sides.bottom -- 金箱子连接在传送器的底部
 diamond_chest_side = sides.up -- 钻石箱子连接在传送器的底部
 lowest_order_quantity = 1000 -- 最低合成请求数量 ]]
 
+-- 格式化大数值以提高可读性
+local function formatNumber(num)
+    if type(num) ~= "number" then num = tonumber(num) or 0 end
+    if num >= 1000000000000000 then
+        return string.format("%.2fP", num / 1000000000000000)
+    elseif num >= 1000000000000 then
+        return string.format("%.2fT", num / 1000000000000)
+    elseif num >= 1000000000 then
+        return string.format("%.2fG", num / 1000000000)
+    elseif num >= 1000000 then
+        return string.format("%.2fM", num / 1000000)
+    elseif num >= 1000 then
+        return string.format("%.2fk", num / 1000)
+    else
+        return tostring(num)
+    end
+end
+
 -- 检查并创建配置文件的函数
 local function check_and_create_config(filename, content)
     local f = io.open(filename, "r")
@@ -55,18 +73,18 @@ local function load_config(filename)
         print("当前配置:")
         print("无线红石频率: " .. wireless)
         print("等待时间(分钟): " .. waitMins)
-        print("黄金箱子物品维持库存倍数: " .. gold_chest_multiple)
-        print("钻石箱子物品维持库存倍数: " .. diamond_chest_multiple)
+        print("黄金箱子物品维持库存倍数: " .. formatNumber(gold_chest_multiple))
+        print("钻石箱子物品维持库存倍数: " .. formatNumber(diamond_chest_multiple))
         print("合成失败后尝试减半数量重新请求的次数: " .. try_times_half)
         -- print("金箱子连接在传送器的侧面: " .. gold_chest_side)
         -- print("钻石箱子连接在传送器的侧面: " .. diamond_chest_side)
-        print("最低合成请求数量: " .. lowest_order_quantity)
+        print("最低合成请求数量: " .. formatNumber(lowest_order_quantity))
         print("---------------------------------------")
     end
 end
 
 function init()
-    print("脚本版本v3.7 2026/3/7")
+    print("脚本版本v3.8 2026/3/16")
     -- local componentList = component.list() -- 这个函数返回一个迭代器用于遍历所有可用组件地址、名称，
     print("全设备地址")
     for address, name in component.list() do -- 循环遍历所有组件，此处的list()支持两个额外参数，第一个是过滤字符串，第二个是是否精确匹配，例如component.list("red",true)
@@ -200,7 +218,7 @@ function craftItem(item_label, quantity)
     local begin_quantity = quantity -- 原始请求数量
     while true do
         try_times = try_times - 1
-        print("请求合成物品: " .. item_label .. " 数量: " .. quantity)
+        print("请求合成物品: " .. item_label .. " 数量: " .. formatNumber(quantity))
         craft = Craftables[1].request(quantity)
         os.sleep(1)
         while craft.isComputing() do
@@ -216,7 +234,7 @@ function craftItem(item_label, quantity)
             else
                 if begin_quantity > lowest_order_quantity then
                     if quantity <= lowest_order_quantity then
-                        print("合成数量已低于最低合成请求数量: " .. lowest_order_quantity ..
+                        print("合成数量已低于最低合成请求数量: " .. formatNumber(lowest_order_quantity) ..
                             "，放弃本次合成请求")
                         os.sleep(1)
                         return
@@ -225,7 +243,7 @@ function craftItem(item_label, quantity)
                     if quantity < lowest_order_quantity then
                         quantity = lowest_order_quantity
                     end
-                    print("尝试减少合成数量至: " .. quantity .. " 后重新请求")
+                    print("尝试减少合成数量至: " .. formatNumber(quantity) .. " 后重新请求")
                 else
                     if quantity <= 1 then
                         print("合成数量已减至1，放弃本次合成请求")
@@ -271,7 +289,7 @@ function check_diamond_chest()
             local item_label = item.label
             local item_count = item.size
             print("检测到钻石箱子中第" .. slot .. "格子的物品: " .. item_label .. " 数量: " ..
-                item_count .. " 意味着需要维持库存: " .. item_count * diamond_chest_multiple)
+                formatNumber(item_count) .. " 意味着需要维持库存: " .. formatNumber(item_count * diamond_chest_multiple))
             local stored_items = me_interface.getItemsInNetwork({
                 label = item_label
             })
@@ -279,10 +297,10 @@ function check_diamond_chest()
             for _, stored_item in ipairs(stored_items) do
                 total_count = total_count + stored_item.size
             end
-            print("ME网络中该物品的总数量: " .. total_count)
+            print("ME网络中该物品的总数量: " .. formatNumber(total_count))
             if total_count < item_count * diamond_chest_multiple then
                 local to_craft_count = item_count * diamond_chest_multiple - total_count
-                print("需要合成的数量: " .. to_craft_count)
+                print("需要合成的数量: " .. formatNumber(to_craft_count))
                 gpu.setForeground(0x66ccFF)
                 craftItem(item_label, to_craft_count)
                 gpu.setForeground(0x00FF00)
@@ -310,8 +328,8 @@ function check_gold_chest()
             local item_label = item.label
             local item_count = item.size
             print(
-                "检测到金箱子中第" .. slot .. "格子的物品: " .. item_label .. " 数量: " .. item_count ..
-                " 意味着需要维持库存: " .. item_count * gold_chest_multiple)
+                "检测到金箱子中第" .. slot .. "格子的物品: " .. item_label .. " 数量: " .. formatNumber(item_count) ..
+                " 意味着需要维持库存: " .. formatNumber(item_count * gold_chest_multiple))
             local stored_items = me_interface.getItemsInNetwork({
                 label = item_label
             })
@@ -319,10 +337,10 @@ function check_gold_chest()
             for _, stored_item in ipairs(stored_items) do
                 total_count = total_count + stored_item.size
             end
-            print("ME网络中该物品的总数量: " .. total_count)
+            print("ME网络中该物品的总数量: " .. formatNumber(total_count))
             if total_count < item_count * gold_chest_multiple then
                 local to_craft_count = item_count * gold_chest_multiple - total_count
-                print("需要合成的数量: " .. to_craft_count)
+                print("需要合成的数量: " .. formatNumber(to_craft_count))
                 gpu.setForeground(0x66ccFF)
                 craftItem(item_label, to_craft_count)
                 gpu.setForeground(0x00FF00)
