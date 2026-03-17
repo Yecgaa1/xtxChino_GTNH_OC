@@ -366,6 +366,7 @@ function main()
     local t;
     while true do
         ::continue::
+        local round_start_time = os.clock()
         gpu.setForeground(0xFF0000)
         print("倪哥正在超辛勤工作")
         isWork = false
@@ -385,8 +386,13 @@ function main()
             goto continue
         end
         print("激爽下班")
-        t = waitMins -- 设置等待时间，单位为分钟
-        print("等待" .. waitMins .. "分钟后再次检查")
+        local elapsed_mins = math.floor((os.clock() - round_start_time) / 60)
+        t = waitMins - elapsed_mins
+        if t <= 0 then
+            print("本轮检查耗时" .. elapsed_mins .. "分钟，已超过等待时间，立即开始下次检查")
+            goto continue
+        end
+        print("本轮检查耗时" .. elapsed_mins .. "分钟，还需等待" .. t .. "分钟后再次检查")
         last_redstone_state = false
         if is_Redstone_mode > 0 then
             last_redstone_state = redstone.getInput(sides.front)
