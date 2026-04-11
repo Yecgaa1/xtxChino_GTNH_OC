@@ -84,7 +84,7 @@ local function load_config(filename)
 end
 
 function init()
-    print("脚本版本v3.8 2026/3/16")
+    print("脚本版本v3.9 2026/4/11")
     -- local componentList = component.list() -- 这个函数返回一个迭代器用于遍历所有可用组件地址、名称，
     print("全设备地址")
     for address, name in component.list() do -- 循环遍历所有组件，此处的list()支持两个额外参数，第一个是过滤字符串，第二个是是否精确匹配，例如component.list("red",true)
@@ -187,26 +187,42 @@ function craftItem(item_label, quantity)
         end
     else
         while true do
+            local cpus = me_controller.getCpus()
+            local has_idle_cpu = false
+
             -- 首先遍历所有 CPU，检查是否有任何一个正在合成该物品
-            for _, cpu in ipairs(me_controller.getCpus()) do
+            for _, cpu in ipairs(cpus) do
                 if cpu.busy then
                     local ok, result = pcall(function()
                         return cpu.cpu.finalOutput().label
                     end)
                     if ok and result == item_label then
+                        if not has_idle_cpu then
+                            for _, current_cpu in ipairs(cpus) do
+                                if not current_cpu.busy then
+                                    has_idle_cpu = true
+                                    break
+                                end
+                            end
+                        end
+                        if not has_idle_cpu then
+                            rework = true
+                        end
                         print("检测到已有CPU正在合成相同物品，跳过本次合成请求")
                         return
                     end
+                else
+                    has_idle_cpu = true
                 end
             end
-            
+
             -- 然后检查是否有空闲的 CPU
-            for _, cpu in ipairs(me_controller.getCpus()) do
-                if not cpu.busy then
-                    goto craft_start
-                end
+            if has_idle_cpu then
+                goto craft_start
+            else
+                rework = true
             end
-            
+
             -- 没有空闲 CPU，等待
             print("ME合成器全部忙碌中，等待10秒...")
             os.sleep(10)
@@ -370,6 +386,7 @@ function main()
         gpu.setForeground(0xFF0000)
         print("倪哥正在超辛勤工作")
         isWork = false
+        rework = false
         redstoneWork(true)
         print("开始检查钻石箱子")
         check_diamond_chest()
@@ -381,8 +398,8 @@ function main()
         end
 
         gpu.setForeground(0xFF0000)
-        if isWork and rework then
-            print("本次有工作，继续下次检查")
+        if rework then
+            print("本轮检测到ME合成器全部忙碌，立即开始下次检查")
             goto continue
         end
         print("激爽下班")
