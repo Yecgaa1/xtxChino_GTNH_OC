@@ -84,7 +84,7 @@ local function load_config(filename)
 end
 
 function init()
-    print("脚本版本v3.9 2026/4/11")
+    print("脚本版本v3.10 2026/5/2")
     -- local componentList = component.list() -- 这个函数返回一个迭代器用于遍历所有可用组件地址、名称，
     print("全设备地址")
     for address, name in component.list() do -- 循环遍历所有组件，此处的list()支持两个额外参数，第一个是过滤字符串，第二个是是否精确匹配，例如component.list("red",true)
@@ -205,9 +205,9 @@ function craftItem(item_label, quantity)
                                 end
                             end
                         end
-                        if not has_idle_cpu then
-                            rework = true
-                        end
+                        -- if not has_idle_cpu then
+                        --     rework = true
+                        -- end
                         print("检测到已有CPU正在合成相同物品，跳过本次合成请求")
                         return
                     end
