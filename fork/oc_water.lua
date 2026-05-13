@@ -1,9 +1,8 @@
--- v3.2 2026/3/30 fork
+-- v3.3 2026/5/13 fork
 local component = require("component")
 local sides = require("sides")
 local os = require("os")
 local io = require("io")
- 
 local CONFIG = {
     POWER_SWITCH_PORT = sides.west,
     TOTAL_POWER = 0,
@@ -22,7 +21,6 @@ local CONFIG = {
         LEVEL_TOTAL_PARALLEL = {}
     }
 }
- 
 -- 常量配置
 local CONST = {
     MAX_STOCK_MULTIPLIER = 5,          -- 库存上限倍率
@@ -62,24 +60,20 @@ local CONST = {
         "LUV", "ZPM", "UV", "UHV", "UEV", "UIV", "UMV","UXV"
     }
 }
- 
 -- 全局变量
 local machines = {}
 for level = 0, 8 do machines[level] = { proxies = {} } end
 local MACHINE_SCAN_RESULT = { total = 0, host = 0, units = {} }
 local rsComponent = component.isAvailable("redstone") and component.proxy(component.list("redstone")()) or nil
- 
 -- ==================== 工具函数 ====================
 -- 清屏
 local function clearScreen()
     os.execute(string.find(os.getenv("OS") or "", "Windows") and "cls" or "clear")
 end
- 
 -- 打印系统标题
 local function printSystemTitle()
     print("================================ 净化水线总控系统 ================================")
 end
- 
 -- 数字格式化
 local function formatNumber(num)
     if not num or num == 0 then return "0" end
@@ -88,7 +82,6 @@ local function formatNumber(num)
     local formatted = string.gsub(reversed, "(%d%d%d)", "%1,")
     return string.reverse(formatted):gsub("^,", "")
 end
- 
 -- 用户输入等待
 local function waitForUserInput(promptMsg)
     print("\n================================ 操作提示 ================================")
@@ -103,7 +96,6 @@ local function waitForUserInput(promptMsg)
     end
     return true
 end
- 
 -- 获取流体数量
 local function getFluidAmount(fluidName)
     if not component.isAvailable("me_interface") then return 0 end
@@ -114,7 +106,6 @@ local function getFluidAmount(fluidName)
     end
     return 0
 end
- 
 -- GT功率格式化
 local function getGTInfo(euPerTick, withColor)
     withColor = withColor ~= false
@@ -128,16 +119,13 @@ local function getGTInfo(euPerTick, withColor)
         end
         maxVoltageName = CONST.COLOR.VOLTAGE .. maxVoltageName .. CONST.COLOR.RESET
     end
- 
     if euPerTick == 0 then
         return "0A " .. voltageNames[1]
     end
- 
     local absValue = math.abs(euPerTick)
     if absValue >= CONST.MAX_VOLTAGE_VALUE then
         return string.format("%sA %s", formatNumber(absValue/CONST.MAX_VOLTAGE_VALUE), maxVoltageName)
     end
- 
     local voltage_for_tier = absValue / 2 / (4 ^ CONST.GT_SHOW_LOWER_TIER)
     local tier = voltage_for_tier < 4 and 1 or math.floor(math.log(voltage_for_tier) / math.log(4))
     tier = math.max(1, math.min(tier, #voltageNames))
@@ -146,12 +134,10 @@ local function getGTInfo(euPerTick, withColor)
     local current = absValue / baseVoltage
     return string.format("%.0fA %s", current, voltageNames[tier])
 end
- 
 -- ==================== 红石控制 ====================
 local function isRedstoneActive()
     return rsComponent and rsComponent.getInput(CONST.RS_SIDE) > 0
 end
- 
 -- ==================== 库存/机器状态判断 ====================
 -- 判断等级是否超库存上限
 local function isLevelOverMaxStock(level)
@@ -162,7 +148,6 @@ local function isLevelOverMaxStock(level)
     local fluidName = cfg.fluidId or CONST.FLUID_NAMES[level]
     return getFluidAmount(fluidName) >= threshold * CONST.MAX_STOCK_MULTIPLIER
 end
- 
 -- 判断等级是否缺水
 local function isLevelInShortage(level)
     local cfg = CONFIG.CACHED_CONFIG[level]
@@ -171,7 +156,6 @@ local function isLevelInShortage(level)
     local current = getFluidAmount(fluidName)
     return current < (cfg.threshold or 0)
 end
- 
 -- 检查物料是否充足
 local function checkMaterialSufficient(targetLevel)
     if targetLevel == 1 then return true end
@@ -181,7 +165,6 @@ local function checkMaterialSufficient(targetLevel)
     local totalParallel = CONFIG.CALCULATED.LEVEL_TOTAL_PARALLEL[targetLevel] or 0
     return totalParallel > 0 and currentStock > totalParallel * 1000
 end
- 
 -- 检查主机是否运行
 local function isWaterPlantRunning()
     for _, plant in ipairs(machines[0].proxies) do
@@ -193,9 +176,8 @@ local function isWaterPlantRunning()
     end
     return false
 end
- 
 -- ==================== 核心业务逻辑 ====================
--- 扫描并计算总功率
+-- 扫描并计算总功率（已修复：多A能源仓+无线激光仓按等级计算）
 local function scanAndCalculateTotalPower()
     local totalPower = 0
     local hasValidEnergyHatch = false
@@ -205,14 +187,32 @@ local function scanAndCalculateTotalPower()
         local success, machineName = pcall(proxy.getName)
         if not success then goto continue end
         
+        -- 普通能量隧道：保持原有逻辑不变
         if machineName:find("hatch.energytunnel") then
             totalPower = totalPower + math.floor(proxy.getEUCapacity() / 24)
             hasValidEnergyHatch = true
+        -- 无线激光隧道：按指定规则计算（1级=256A，每级×4）
         elseif machineName:find("hatch.energywirelesstunnel") then
-            totalPower = totalPower + math.floor(proxy.getEUCapacity() / 4000)
-            hasValidEnergyHatch = true
+            -- 从名称提取安培等级（tunnel后面的数字）
+            local ampLevel = tonumber(machineName:match("tunnel(%d+)"))
+            local inputVoltage = proxy.getInputVoltage()
+            
+            if ampLevel and ampLevel >= 1 and inputVoltage and inputVoltage > 0 then
+                -- 计算安培数：256 × 4^(等级-1)
+                local ampNum = 256 * math.pow(4, ampLevel - 1)
+                -- 计算总功率：安培数 × 输入电压
+                totalPower = totalPower + ampNum * inputVoltage
+                hasValidEnergyHatch = true
+            else
+                -- 名称解析失败时回退到原有逻辑，保证兼容性
+                totalPower = totalPower + math.floor(proxy.getEUCapacity() / 4000)
+                hasValidEnergyHatch = true
+                print(string.format("警告：无线激光隧道 %s 名称解析失败，使用备用计算方式", machineName))
+            end
+        -- 多输入能源仓（普通+无线）：修复安培数提取顺序
         elseif machineName:find("hatch.energymulti") or machineName:find("hatch.energywirelessmulti") then
-            local multiNum = tonumber(machineName:match("tier.(%d+)") or machineName:match("multi(%d+)"))
+            -- 优先提取multi后面的真实安培数，tier后面的作为备用兼容
+            local multiNum = tonumber(machineName:match("multi(%d+)") or machineName:match("tier.(%d+)"))
             local inputVoltage = proxy.getInputVoltage()
             if multiNum and inputVoltage and inputVoltage > 0 then
                 totalPower = totalPower + multiNum * inputVoltage
@@ -224,7 +224,6 @@ local function scanAndCalculateTotalPower()
     CONFIG.TOTAL_POWER = totalPower
     return hasValidEnergyHatch, totalPower
 end
- 
 -- 加载缓存配置
 local function loadCacheConfigFromRequesters()
     local cacheSlots = {}
@@ -243,7 +242,6 @@ local function loadCacheConfigFromRequesters()
         end
         ::continue::
     end
- 
     CONFIG.CACHED_LEVELS = {}
     for level = 1, 8 do
         local slotInfo = cacheSlots[level]
@@ -256,7 +254,6 @@ local function loadCacheConfigFromRequesters()
     end
     return true
 end
- 
 -- 计算等级参数
 local function calculateAndSaveLevelParams()
     for level = 1, 8 do
@@ -279,7 +276,6 @@ local function calculateAndSaveLevelParams()
         end
     end
 end
- 
 -- 选择等级查看详情
 local function selectLevelForDetail()
     while true do
@@ -301,7 +297,6 @@ local function selectLevelForDetail()
             clearScreen()
             return
         end
- 
         clearScreen()
         printSystemTitle()
         print("\n==================== T"..level.."级净水单元详细配置 ====================")
@@ -330,13 +325,11 @@ local function selectLevelForDetail()
         io.read()
     end
 end
- 
 -- 初始化机器和功率
 local function initializeMachinesAndPower()
     -- 重置机器列表
     for level = 0, 8 do machines[level].proxies = {} end
     MACHINE_SCAN_RESULT = { total = 0, host = 0, units = {} }
- 
     -- 扫描机器
     for address, _ in component.list("gt_machine") do
         local proxy = component.proxy(address)
@@ -358,7 +351,6 @@ local function initializeMachinesAndPower()
         print("初始化失败：未检测到净水厂主机（T0级），请先绑定！")
         return false
     end
- 
     -- 扫描功率
     local hasValidEnergy, totalPower = scanAndCalculateTotalPower()
     
@@ -379,7 +371,6 @@ local function initializeMachinesAndPower()
     end
     return hasValidEnergy
 end
- 
 -- 获取最低缺水等级
 local function getLowestShortageLevel()
     local shortageLevels = {}
@@ -391,7 +382,6 @@ local function getLowestShortageLevel()
     table.sort(shortageLevels)
     return shortageLevels[1]
 end
- 
 -- 核心：计算生产分配
 local function calculateMultiLevelAllocation(lowestLevel)
     -- 红石激活：全力生产8级水
@@ -413,7 +403,6 @@ local function calculateMultiLevelAllocation(lowestLevel)
         end
         return allocation
     end
- 
     -- 非红石激活：按库存+机器数规则生产
     local allocation = {}
     local remainingPower = CONFIG.TOTAL_POWER
@@ -428,7 +417,6 @@ local function calculateMultiLevelAllocation(lowestLevel)
     else
         return allocation
     end
- 
     -- 向下轮询
     if remainingPower > 0 then
         local currentCheckLevel = lowestLevel - 1
@@ -443,7 +431,6 @@ local function calculateMultiLevelAllocation(lowestLevel)
             currentCheckLevel = currentCheckLevel - 1
         end
     end
- 
     -- 向上轮询
     if remainingPower > 0 then
         local currentCheckLevel = lowestLevel + 1
@@ -452,7 +439,6 @@ local function calculateMultiLevelAllocation(lowestLevel)
             local currMachineCount = #machines[currentCheckLevel].proxies
             local nextLevel = currentCheckLevel + 1
             local nextMachineCount = nextLevel <= 8 and #machines[nextLevel].proxies or 0
- 
             -- 所有条件必须同时满足
             local condition = (levelPower > 0) 
                 and (currMachineCount > 0) 
@@ -470,10 +456,8 @@ local function calculateMultiLevelAllocation(lowestLevel)
             end
         end
     end
- 
     return allocation
 end
- 
 -- 判断分配是否变化
 local function isAllocationSame(oldAlloc, newAlloc)
     if type(oldAlloc) ~= "table" or type(newAlloc) ~= "table" then return false end
@@ -484,7 +468,6 @@ local function isAllocationSame(oldAlloc, newAlloc)
     end
     return true
 end
- 
 -- 紧急停机
 local function emergencyShutdownAllMachines()
     for level = 1, 8 do
@@ -497,7 +480,6 @@ local function emergencyShutdownAllMachines()
     CONFIG.SYSTEM_EMERGENCY_STOPPED = true
     print("紧急停机：所有净水机器已强制关闭！")
 end
- 
 -- 启动生产
 local function startProductionByAllocation(allocationPlan)
     if CONFIG.SYSTEM_EMERGENCY_STOPPED or not allocationPlan then return false end
@@ -510,7 +492,6 @@ local function startProductionByAllocation(allocationPlan)
     CONFIG.LAST_ACTIVE_LEVEL = allocationPlan
     return true
 end
- 
 -- 监控主机状态
 local function monitorPlantStatus()
     local currentStatus = isWaterPlantRunning()
@@ -527,7 +508,6 @@ local function monitorPlantStatus()
     end
     return currentStatus
 end
- 
 -- 打印水量状态
 local function printCacheWaterStatus()
     print("\n==================== 缓存水量状态 ====================")
@@ -542,18 +522,15 @@ local function printCacheWaterStatus()
         local percentage = expected > 0 and (current / expected) * 100 or 0
         local percentStr = string.format("(%.1f%%)", percentage)
         local statusStr = ""
- 
         if isOn then
             statusStr = current < expected and "库存不足 " .. percentStr .. " 【生产中】" or "补充备货 " .. percentStr .. " 【生产中】"
         else
             statusStr = isOverMax and "超上限停产 " .. percentStr or (current < expected and "库存不足 " .. percentStr or "库存充足 " .. percentStr)
         end
- 
         print(string.format("T%d级水：目标 %s mB | 当前 %s mB | %s", 
             level, formatNumber(expected), formatNumber(current), statusStr))
     end
 end
- 
 -- 打印系统状态
 local function printFullSystemStatus()
     local plantStatus = isWaterPlantRunning()
@@ -586,7 +563,6 @@ local function printFullSystemStatus()
     end
     printCacheWaterStatus()
 end
- 
 -- 系统初始化
 local function initialize()
     CONFIG.LAST_PLANT_STATUS = isWaterPlantRunning()
@@ -634,7 +610,6 @@ local function initialize()
     end
     waitForUserInput("系统初始化完成，是否进入主监控程序？")
 end
- 
 -- 主循环
 local function mainLoop()
     while not CONFIG.SYSTEM_EMERGENCY_STOPPED do
@@ -684,7 +659,6 @@ local function mainLoop()
         os.execute("sleep " .. tostring(isRunning and CONFIG.CHECK_INTERVAL_RUNNING or CONFIG.CHECK_INTERVAL_STOPPED))
     end
 end
- 
 -- 主函数
 local function main()
     if not initializeMachinesAndPower() then
@@ -709,6 +683,5 @@ local function main()
     initialize()
     mainLoop()
 end
- 
 -- 启动程序
 main()
