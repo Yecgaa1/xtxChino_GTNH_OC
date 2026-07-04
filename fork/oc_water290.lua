@@ -1,0 +1,839 @@
+-- v3.5 2026/7/5 fork
+local component = require("component")
+local sides = require("sides")
+local os = require("os")
+local io = require("io")
+
+local CONFIG = {
+    POWER_SWITCH_PORT = sides.west,
+    TOTAL_POWER = 0,
+    CACHED_CONFIG = {},
+    CACHED_LEVELS = {},
+    LAST_PLANT_STATUS = nil,
+    SYSTEM_EMERGENCY_STOPPED = false,
+    LAST_ACTIVE_LEVEL = nil,
+    CHECK_INTERVAL_STOPPED = 5,
+    CHECK_INTERVAL_RUNNING = 20,
+    IS_PLANT_SHUTDOWN_FROM_RUNNING = false,
+    CALCULATED = {
+        SUGGEST_SINGLE_PARALLEL = {},
+        SINGLE_MACHINE_POWER = {},
+        LEVEL_TOTAL_POWER = {},
+        LEVEL_TOTAL_PARALLEL = {},
+        MINIMUM_STOCK = {}    
+    }
+}
+
+-- 常量配置
+local CONST = {
+    MAX_STOCK_MULTIPLIER = 5,          -- 库存上限倍率
+    RS_SIDE = sides.east,             -- 红石拉杆侧
+    MAX_SINGLE_PARALLEL = 2147484,     -- 单台最大并行
+    GT_SHOW_LOWER_TIER = 4,            -- GT电压等级计算参数
+    MAX_VOLTAGE_VALUE = 2147483640,    -- 最大电压值
+    POWER_LEVELS = {                   -- 各等级单并行功耗
+        [1] = 30720, [2] = 30720, [3] = 122880, [4] = 122880,
+        [5] = 491520, [6] = 491520, [7] = 1966080, [8] = 7864320
+    },
+    FLUID_NAMES = {                    -- 各等级水流体名
+        [1] = "grade1purifiedwater", [2] = "grade2purifiedwater",
+        [3] = "grade3purifiedwater", [4] = "grade4purifiedwater",
+        [5] = "grade5purifiedwater", [6] = "grade6purifiedwater",
+        [7] = "grade7purifiedwater", [8] = "grade8purifiedwater"
+    },
+    MACHINE_NAMES = {                  -- 机器名对应等级
+        ["multimachine.purificationplant"] = 0,
+        ["multimachine.purificationunitclarifier"] = 1,
+        ["multimachine.purificationunitozonation"] = 2,
+        ["multimachine.purificationunitflocculator"] = 3,
+        ["multimachine.purificationunitphadjustment"] = 4,
+        ["multimachine.purificationunitplasmaheater"] = 5,
+        ["multimachine.purificationunituvtreatment"] = 6,
+        ["multimachine.purificationunitdegasifier"] = 7,
+        ["multimachine.purificationunitextractor"] = 8
+    },
+    COLOR = {                          -- 颜色配置
+        VOLTAGE = "\27[35m",
+        RESET = "\27[0m",
+        GREEN = "\27[32m",
+        RED = "\27[31m",
+        YELLOW = "\27[33m"
+    },
+    VOLTAGE_NAMES = {                  -- 电压等级名
+        "ULV", "LV", "MV", "HV", "EV", "IV",
+        "LUV", "ZPM", "UV", "UHV", "UEV", "UIV", "UMV","UXV"
+    },
+    -- 保底库存计算系数
+    MIN_STOCK_MULTIPLIER = 2,
+    STOCK_PER_PARALLEL = 1000
+}
+
+-- 全局变量
+local machines = {}
+for level = 0, 8 do machines[level] = { proxies = {} } end
+local MACHINE_SCAN_RESULT = { total = 0, host = 0, units = {} }
+local rsComponent = component.isAvailable("redstone") and component.proxy(component.list("redstone")()) or nil
+
+-- 添加fluid_interface组件
+local fluidInterface = nil
+local function initializeFluidInterface()
+    local fluidAddr = component.list("fluid_interface")()
+    if fluidAddr then
+        fluidInterface = component.proxy(fluidAddr)
+        print("成功连接到fluid_interface: " .. fluidAddr)
+        return true
+    else
+        print("警告：未找到fluid_interface流体接口设备，流体读取功能将不可用")
+        return false
+    end
+end
+
+-- ==================== 工具函数 ====================
+-- 清屏
+local function clearScreen()
+    os.execute(string.find(os.getenv("OS") or "", "Windows") and "cls" or "clear")
+end
+
+-- 打印系统标题
+local function printSystemTitle()
+    print("================================ 净化水线总控系统 ================================")
+end
+
+-- 数字格式化
+local function formatNumber(num)
+    if not num or num == 0 then return "0" end
+    local str = tostring(math.floor(num))
+    local reversed = string.reverse(str)
+    local formatted = string.gsub(reversed, "(%d%d%d)", "%1,")
+    return string.reverse(formatted):gsub("^,", "")
+end
+
+-- 用户输入等待
+local function waitForUserInput(promptMsg)
+    print("\n================================ 操作提示 ================================")
+    print(promptMsg)
+    print("输入 'n' 退出程序，输入其他任意键继续运行")
+    io.write("> ")
+    local input = io.read():lower()
+    if input == "n" or input == "no" then
+        print("用户选择退出程序，正在关闭...")
+        os.sleep(1)
+        os.exit(0)
+    end
+    return true
+end
+
+-- 获取流体数量
+local function getFluidAmount(fluidName)
+    if not fluidInterface then return 0 end
+
+    local success, fluidDetail = pcall(fluidInterface.getFluidInNetwork, fluidName)
+    if success and fluidDetail and next(fluidDetail) ~= nil then
+        return math.max(0, fluidDetail.amount or 0)
+    end
+
+    return 0
+end
+
+-- 获取所有流体信息
+local function getAllFluids()
+    if not fluidInterface then return {} end
+
+    local success, allFluids = pcall(fluidInterface.getFluidsInNetwork)
+    local result = {}
+    if success and type(allFluids) == "table" and #allFluids > 0 then
+        for _, fluid in ipairs(allFluids) do
+            result[fluid.name] = fluid.amount or 0
+        end
+    end
+    return result
+end
+
+-- GT功率格式化
+local function getGTInfo(euPerTick, withColor)
+    withColor = withColor ~= false
+    local voltageNames = CONST.VOLTAGE_NAMES
+    local maxVoltageName = "MAX"
+    
+    if withColor then
+        voltageNames = {}
+        for _, name in ipairs(CONST.VOLTAGE_NAMES) do
+            table.insert(voltageNames, CONST.COLOR.VOLTAGE .. name .. CONST.COLOR.RESET)
+        end
+        maxVoltageName = CONST.COLOR.VOLTAGE .. maxVoltageName .. CONST.COLOR.RESET
+    end
+    if euPerTick == 0 then
+        return "0A " .. voltageNames[1]
+    end
+    local absValue = math.abs(euPerTick)
+    if absValue >= CONST.MAX_VOLTAGE_VALUE then
+        return string.format("%sA %s", formatNumber(absValue/CONST.MAX_VOLTAGE_VALUE), maxVoltageName)
+    end
+    local voltage_for_tier = absValue / 2 / (4 ^ CONST.GT_SHOW_LOWER_TIER)
+    local tier = voltage_for_tier < 4 and 1 or math.floor(math.log(voltage_for_tier) / math.log(4))
+    tier = math.max(1, math.min(tier, #voltageNames))
+    
+    local baseVoltage = 8 * (4 ^ (tier - 1))
+    local current = absValue / baseVoltage
+    return string.format("%.0fA %s", current, voltageNames[tier])
+end
+
+-- ==================== 红石控制 ====================
+local function isRedstoneActive()
+    return rsComponent and rsComponent.getInput(CONST.RS_SIDE) > 0
+end
+
+-- ==================== 库存/机器状态判断 ====================
+-- 判断等级是否超库存上限
+local function isLevelOverMaxStock(level)
+    local cfg = CONFIG.CACHED_CONFIG[level]
+    if not cfg then return true end
+    local fluidName = cfg.fluidId or CONST.FLUID_NAMES[level]
+    local current = getFluidAmount(fluidName)
+    local minStock = CONFIG.CALCULATED.MINIMUM_STOCK[level] or 0
+    
+    if cfg.enabled then
+        local stopThreshold = math.max((cfg.threshold or 0) * CONST.MAX_STOCK_MULTIPLIER, minStock)
+        return current >= stopThreshold
+    else
+        return minStock > 0 and current >= minStock
+    end
+end
+
+-- 判断等级是否缺水
+local function isLevelInShortage(level)
+    local cfg = CONFIG.CACHED_CONFIG[level]
+    if not cfg then return false end
+    local fluidName = cfg.fluidId or CONST.FLUID_NAMES[level]
+    local current = getFluidAmount(fluidName)
+    local playerThreshold = (cfg.enabled and cfg.threshold) or 0
+    local minStock = CONFIG.CALCULATED.MINIMUM_STOCK[level] or 0
+    local minRequired = math.max(playerThreshold, minStock)
+    return current < minRequired
+end
+
+-- 检查物料是否充足
+local function checkMaterialSufficient(targetLevel)
+    if targetLevel == 1 then return true end
+    local inputLevel = targetLevel - 1
+    local inputFluid = CONST.FLUID_NAMES[inputLevel]
+    local currentStock = getFluidAmount(inputFluid)
+    local totalParallel = CONFIG.CALCULATED.LEVEL_TOTAL_PARALLEL[targetLevel] or 0
+    return totalParallel > 0 and currentStock > totalParallel * CONST.STOCK_PER_PARALLEL
+end
+
+-- 检查主机是否运行
+local function isWaterPlantRunning()
+    for _, plant in ipairs(machines[0].proxies) do
+        local success, result = pcall(function()
+            if plant.isMachineActive then return plant.isMachineActive() end
+            return plant.getEUStored and plant.getEUStored() > 0
+        end)
+        if success and result then return true end
+    end
+    return false
+end
+
+-- ==================== 核心业务 ====================
+-- 扫描并计算总功率
+local function scanAndCalculateTotalPower()
+    local totalPower = 0
+    local hasValidEnergyHatch = false
+    for address, _ in component.list("gt_machine") do
+        local proxy = component.proxy(address)
+        if not proxy then goto continue end
+        local success, machineName = pcall(proxy.getName)
+        if not success then goto continue end
+        
+        if machineName:find("hatch.energytunnel") then
+            totalPower = totalPower + math.floor(proxy.getEUCapacity() / 24)
+            hasValidEnergyHatch = true
+        elseif machineName:find("hatch.energywirelesstunnel") then
+            local ampLevel = tonumber(machineName:match("tunnel(%d+)"))
+            local inputVoltage = proxy.getInputVoltage()
+            if ampLevel and ampLevel >= 1 and inputVoltage and inputVoltage > 0 then
+                local ampNum = 256 * math.pow(4, ampLevel - 1)
+                totalPower = totalPower + ampNum * inputVoltage
+                hasValidEnergyHatch = true
+            else
+                totalPower = totalPower + math.floor(proxy.getEUCapacity() / 4000)
+                hasValidEnergyHatch = true
+                print(string.format("警告：无线激光隧道 %s 名称解析失败，使用备用计算方式", machineName))
+            end
+        elseif machineName:find("hatch.energymulti") or machineName:find("hatch.energywirelessmulti") then
+            local multiNum = tonumber(machineName:match("multi(%d+)") or machineName:match("tier.(%d+)"))
+            local inputVoltage = proxy.getInputVoltage()
+            if multiNum and inputVoltage and inputVoltage > 0 then
+                totalPower = totalPower + multiNum * inputVoltage
+                hasValidEnergyHatch = true
+            end
+        end
+        ::continue::
+    end
+    CONFIG.TOTAL_POWER = totalPower
+    return hasValidEnergyHatch, totalPower
+end
+
+-- 加载缓存配置
+local function loadCacheConfigFromRequesters()
+    local cacheSlots = {}
+    for address, _ in component.list("level_maintainer") do
+        local proxy = component.proxy(address)
+        if not proxy then goto continue end
+        for slot = 1, 5 do
+            local success, slotData = pcall(proxy.getSlot, slot)
+            if success and slotData and slotData.isEnable and slotData.isFluid then
+                local fluidName = slotData.fluid and slotData.fluid.name or slotData.name
+                -- 剥离模组命名空间后再匹配等级
+                local cleanName = fluidName:lower():match(":(.+)$") or fluidName:lower()
+                local level = tonumber(string.match(cleanName, "grade(%d+)%s*[_-]?%s*purifiedwater"))
+                if level and level >= 1 and level <= 8 then
+                    cacheSlots[level] = { buffer = slotData.quantity or 0, fluidId = fluidName }
+                end
+            end
+        end
+        ::continue::
+    end
+    CONFIG.CACHED_LEVELS = {}
+    for level = 1, 8 do
+        local slotInfo = cacheSlots[level]
+        if slotInfo then
+            CONFIG.CACHED_CONFIG[level] = { threshold = slotInfo.buffer, enabled = true, fluidId = slotInfo.fluidId }
+            table.insert(CONFIG.CACHED_LEVELS, level)
+        else
+            CONFIG.CACHED_CONFIG[level] = { threshold = 0, enabled = false, fluidId = CONST.FLUID_NAMES[level] }
+        end
+    end
+    return true
+end
+
+-- 计算等级并行参数
+local function calculateAndSaveLevelParams()
+    for level = 1, 8 do
+        local deployedCount = #machines[level].proxies
+        local powerPerParallel = CONST.POWER_LEVELS[level] or 0
+        
+        if deployedCount > 0 and powerPerParallel > 0 then
+            local systemMaxTotalParallel = math.floor(CONFIG.TOTAL_POWER / powerPerParallel)
+            local suggestSingleParallel = math.min(math.floor(systemMaxTotalParallel / deployedCount), CONST.MAX_SINGLE_PARALLEL)
+            
+            CONFIG.CALCULATED.SUGGEST_SINGLE_PARALLEL[level] = suggestSingleParallel
+            CONFIG.CALCULATED.SINGLE_MACHINE_POWER[level] = powerPerParallel * suggestSingleParallel
+            CONFIG.CALCULATED.LEVEL_TOTAL_POWER[level] = deployedCount * CONFIG.CALCULATED.SINGLE_MACHINE_POWER[level]
+            CONFIG.CALCULATED.LEVEL_TOTAL_PARALLEL[level] = deployedCount * suggestSingleParallel
+        else
+            CONFIG.CALCULATED.SUGGEST_SINGLE_PARALLEL[level] = 0
+            CONFIG.CALCULATED.SINGLE_MACHINE_POWER[level] = 0
+            CONFIG.CALCULATED.LEVEL_TOTAL_POWER[level] = 0
+            CONFIG.CALCULATED.LEVEL_TOTAL_PARALLEL[level] = 0
+        end
+    end
+end
+
+-- 基于并行数计算低等级保底库存
+local function updateMinimumStocks()
+    CONFIG.CALCULATED.MINIMUM_STOCK = {}
+    for level = 2, 8 do
+        local upperParallel = CONFIG.CALCULATED.LEVEL_TOTAL_PARALLEL[level]
+        if upperParallel and upperParallel > 0 then
+            CONFIG.CALCULATED.MINIMUM_STOCK[level - 1] = upperParallel * CONST.MIN_STOCK_MULTIPLIER * CONST.STOCK_PER_PARALLEL
+        end
+    end
+end
+
+-- 选择等级查看详情
+local function selectLevelForDetail()
+    while true do
+        clearScreen()
+        printSystemTitle()
+        print("\n================================ 等级选择 ================================")
+        print(string.format("系统总可用功率：%s EU/t (%s)", formatNumber(CONFIG.TOTAL_POWER), getGTInfo(CONFIG.TOTAL_POWER)))
+        print(string.format("单台机器最大并行上限：%s", formatNumber(CONST.MAX_SINGLE_PARALLEL)))
+        print("\n操作说明：")
+        print("   1. 输入 1-8 查看对应等级详细配置与并行设置建议")
+        print("   2. 按除数字外任意键直接进入系统初始化")
+        io.write("\n请输入操作指令：> ")
+        
+        local input = io.read():lower()
+        local level = tonumber(input)
+        if not (level and level >= 1 and level <= 8) then
+            print("\n结束等级查看，进入系统初始化流程...")
+            os.sleep(1)
+            clearScreen()
+            return
+        end
+        clearScreen()
+        printSystemTitle()
+        print("\n==================== T"..level.."级净水单元详细配置 ====================")
+        local deployedCount = #machines[level].proxies
+        local powerPerParallel = CONST.POWER_LEVELS[level] or 0
+        
+        if deployedCount > 0 and powerPerParallel > 0 then
+            local calc = CONFIG.CALCULATED
+            print(string.format("已部署机器数量：%d 台", deployedCount))
+            print(string.format("单并行功耗：%s EU/t (%s)", formatNumber(powerPerParallel), getGTInfo(powerPerParallel)))
+            print(string.format("单台机器最大并行上限：%s", formatNumber(CONST.MAX_SINGLE_PARALLEL)))
+            print(string.format("系统总功率允许的总并行上限：%s", formatNumber(math.floor(CONFIG.TOTAL_POWER / powerPerParallel))))
+            print("----------------------------------------------------------------------")
+            print(string.format("✅ 建议每台设置并行数：%s", formatNumber(calc.SUGGEST_SINGLE_PARALLEL[level])))
+            print(string.format("   （按此设置后，单台功耗：%s EU/t (%s)）", 
+                formatNumber(calc.SINGLE_MACHINE_POWER[level]), getGTInfo(calc.SINGLE_MACHINE_POWER[level])))
+            print(string.format("   （该等级全开总功耗：%s EU/t (%s)）", 
+                formatNumber(calc.LEVEL_TOTAL_POWER[level]), getGTInfo(calc.LEVEL_TOTAL_POWER[level])))
+        else
+            print(string.format("T%d级净水单元：未部署有效机器", level))
+        end
+        
+        print("\n----------------------------------------")
+        print("按任意键返回等级选择界面")
+        io.write("> ")
+        io.read()
+    end
+end
+
+-- 初始化机器和功率
+local function initializeMachinesAndPower()
+    for level = 0, 8 do machines[level].proxies = {} end
+    MACHINE_SCAN_RESULT = { total = 0, host = 0, units = {} }
+    
+    for address, _ in component.list("gt_machine") do
+        local proxy = component.proxy(address)
+        if not proxy then goto continue end
+        local success, machineName = pcall(proxy.getName)
+        if not success then goto continue end
+        
+        local level = CONST.MACHINE_NAMES[machineName]
+        if level then 
+            table.insert(machines[level].proxies, proxy)
+            MACHINE_SCAN_RESULT.total = MACHINE_SCAN_RESULT.total + 1
+            MACHINE_SCAN_RESULT.units[level] = (MACHINE_SCAN_RESULT.units[level] or 0) + 1
+            if level == 0 then MACHINE_SCAN_RESULT.host = MACHINE_SCAN_RESULT.host + 1 end
+        end
+        ::continue::
+    end
+    
+    if #machines[0].proxies == 0 then
+        print("初始化失败：未检测到净水厂主机（T0级），请先绑定！")
+        return false
+    end
+    
+    local hasValidEnergy, totalPower = scanAndCalculateTotalPower()
+    
+    clearScreen()
+    printSystemTitle()
+    print("\n==================== 初始化扫描结果 ====================")
+    print(string.format("净水机器总数量：%d 台", MACHINE_SCAN_RESULT.total))
+    print(string.format("净水厂主机（T0级）：%d 台", MACHINE_SCAN_RESULT.host))
+    print("\n净水单元部署情况：")
+    for level = 1, 8 do
+        print(string.format("  T%d级：%d 台", level, MACHINE_SCAN_RESULT.units[level] or 0))
+    end
+    print("\n供能系统：")
+    if hasValidEnergy then
+        print(string.format("  系统总可用功率：%s EU/t (%s)", formatNumber(totalPower), getGTInfo(totalPower)))
+    else
+        print("  错误：未检测到任何有效供能方块！")
+    end
+    return hasValidEnergy
+end
+
+-- 获取最低缺水等级（遍历1~8级，返回有机器且缺水未超上限的最低等级）
+local function getLowestShortageLevel()
+    for level = 1, 8 do
+        if #machines[level].proxies > 0 then
+            if isLevelInShortage(level) and not isLevelOverMaxStock(level) then
+                return level
+            end
+        end
+    end
+    return nil
+end
+
+-- 核心：计算生产分配
+local function calculateMultiLevelAllocation(lowestLevel)
+    -- 红石激活：全力生产8级水（从8级向下分配）
+    if isRedstoneActive() then
+        local allocation = {}
+        local remainingPower = CONFIG.TOTAL_POWER
+        for level = 8, 1, -1 do
+            local levelPower = CONFIG.CALCULATED.LEVEL_TOTAL_POWER[level] or 0
+            local machineCount = #machines[level].proxies
+            if levelPower > 0 and machineCount > 0 and levelPower <= remainingPower then
+                local materialOk = level == 1 or checkMaterialSufficient(level)
+                if materialOk then
+                    allocation[level] = true
+                    remainingPower = remainingPower - levelPower
+                end
+            end
+        end
+        return allocation
+    end
+
+    -- 非红石模式：自底向上（1级→8级），优先保障低级水库存
+    local allocation = {}
+    local remainingPower = CONFIG.TOTAL_POWER
+    for level = 1, 8 do
+        local machineCount = #machines[level].proxies
+        local levelPower = CONFIG.CALCULATED.LEVEL_TOTAL_POWER[level] or 0
+        if machineCount > 0 and levelPower > 0 and levelPower <= remainingPower then
+            if isLevelInShortage(level) and not isLevelOverMaxStock(level) then
+                local materialOk = (level == 1) or checkMaterialSufficient(level)
+                if materialOk then
+                    allocation[level] = true
+                    remainingPower = remainingPower - levelPower
+                end
+            end
+        end
+    end
+    return allocation
+end
+
+-- 判断分配是否变化
+local function isAllocationSame(oldAlloc, newAlloc)
+    if type(oldAlloc) ~= "table" or type(newAlloc) ~= "table" then return false end
+    for level = 1, 8 do
+        if (oldAlloc[level] or false) ~= (newAlloc[level] or false) then
+            return false
+        end
+    end
+    return true
+end
+
+-- 紧急停机
+local function emergencyShutdownAllMachines()
+    for level = 1, 8 do
+        for _, machine in ipairs(machines[level].proxies) do
+            pcall(machine.setWorkAllowed, false)
+        end
+    end
+    CONFIG.LAST_ACTIVE_LEVEL = nil
+    CONFIG.IS_PLANT_SHUTDOWN_FROM_RUNNING = true
+    CONFIG.SYSTEM_EMERGENCY_STOPPED = true
+    print("紧急停机：所有净水机器已强制关闭！")
+end
+
+-- 启动生产
+local function startProductionByAllocation(allocationPlan)
+    if CONFIG.SYSTEM_EMERGENCY_STOPPED or not allocationPlan then return false end
+    for level = 1, 8 do
+        local shouldEnable = allocationPlan[level] == true
+        for _, machine in ipairs(machines[level].proxies) do
+            pcall(machine.setWorkAllowed, shouldEnable)
+        end
+    end
+    CONFIG.LAST_ACTIVE_LEVEL = allocationPlan
+    return true
+end
+
+-- 监控主机状态
+local function monitorPlantStatus()
+    local currentStatus = isWaterPlantRunning()
+    if CONFIG.LAST_PLANT_STATUS ~= currentStatus then
+        if currentStatus then
+            CONFIG.IS_PLANT_SHUTDOWN_FROM_RUNNING = false
+            print("净水主机已恢复运行，解除机器锁定")
+        else
+            CONFIG.IS_PLANT_SHUTDOWN_FROM_RUNNING = true
+            emergencyShutdownAllMachines()
+            print("净水主机停机，已紧急关闭所有净水单元")
+        end
+        CONFIG.LAST_PLANT_STATUS = currentStatus
+    end
+    return currentStatus
+end
+
+-- 打印水量状态
+local function printCacheWaterStatus()
+    print("\n==================== 缓存水量状态 ====================")
+    
+    local rows = {}
+    local maxLengths = {
+        level = 0,
+        checked_val = 0,
+        target_val = 0,
+        current_val = 0,
+        producing = 0
+    }
+    
+    for level = 1, 8 do
+        local cfg = CONFIG.CACHED_CONFIG[level]
+        local fluidName = cfg.fluidId or CONST.FLUID_NAMES[level]
+        local current = getFluidAmount(fluidName)
+        local playerThreshold = (cfg.enabled and cfg.threshold) or 0
+        local minStock = CONFIG.CALCULATED.MINIMUM_STOCK[level] or 0
+        local target = math.max(playerThreshold, minStock)
+        
+        local levelStr = "T" .. level .. "级水"
+        local checkedVal = cfg.enabled and "是" or "否"
+        local targetVal = formatNumber(target)
+        local currentVal = formatNumber(current)
+        
+        local statusStr = ""
+        if isLevelOverMaxStock(level) then
+            statusStr = CONST.COLOR.YELLOW .. "超上限停产" .. CONST.COLOR.RESET
+        elseif isLevelInShortage(level) then
+            statusStr = CONST.COLOR.RED .. "库存不足  " .. CONST.COLOR.RESET
+        else
+            statusStr = CONST.COLOR.GREEN .. "库存充足  " .. CONST.COLOR.RESET
+        end
+        local producingStr = (CONFIG.LAST_ACTIVE_LEVEL and CONFIG.LAST_ACTIVE_LEVEL[level]) and (CONST.COLOR.GREEN .. "【生产中】" .. CONST.COLOR.RESET) or ""
+        
+        table.insert(rows, {
+            level = levelStr,
+            checked_val = checkedVal,
+            target_val = targetVal,
+            current_val = currentVal,
+            status = statusStr,
+            producing = producingStr
+        })
+        
+        maxLengths.level = math.max(maxLengths.level, #levelStr)
+        maxLengths.checked_val = math.max(maxLengths.checked_val, #checkedVal)
+        maxLengths.target_val = math.max(maxLengths.target_val, #targetVal)
+        maxLengths.current_val = math.max(maxLengths.current_val, #currentVal)
+        maxLengths.producing = math.max(maxLengths.producing, #producingStr)
+    end
+    
+    local formatStr = string.format(
+        "%%%ds | 启用: %%%ds | 目标: %%%ds mB | 当前: %%%ds mB | %%s | %%%ds",
+        maxLengths.level,
+        maxLengths.checked_val,
+        maxLengths.target_val,
+        maxLengths.current_val,
+        maxLengths.producing
+    )
+    
+    for _, row in ipairs(rows) do
+        print(string.format(
+            formatStr,
+            row.level,
+            row.checked_val,
+            row.target_val,
+            row.current_val,
+            row.status,
+            row.producing
+        ))
+    end
+end
+
+-- 打印系统状态
+local function printFullSystemStatus()
+    local plantStatus = isWaterPlantRunning()
+    print("\n==================== 实时运行状态 ====================")
+    print(string.format("净水主机状态：%s（刷新间隔：%d秒）",
+        plantStatus and (CONST.COLOR.GREEN .. "运行中" .. CONST.COLOR.RESET) or (CONST.COLOR.RED .. "已停机" .. CONST.COLOR.RESET),
+        plantStatus and CONFIG.CHECK_INTERVAL_RUNNING or CONFIG.CHECK_INTERVAL_STOPPED))
+    print(string.format("库存停产规则：达到目标阈值 %.0f%% 强制停止生产", CONST.MAX_STOCK_MULTIPLIER * 100))
+    local rsActive = isRedstoneActive()
+    print(string.format("八级水全力生产模式：%s（%s）",
+        rsActive and (CONST.COLOR.GREEN .. "激活" .. CONST.COLOR.RESET) or (CONST.COLOR.YELLOW .. "未激活" .. CONST.COLOR.RESET),
+        rsActive and "全力生产8级水" or "按库存/机器数规则生产"))
+    
+    if CONFIG.LAST_ACTIVE_LEVEL and next(CONFIG.LAST_ACTIVE_LEVEL) then
+        print("当前开启等级：")
+        local totalPowerUsed = 0
+        for level = 8, 1, -1 do
+            if CONFIG.LAST_ACTIVE_LEVEL[level] then
+                local power = CONFIG.CALCULATED.LEVEL_TOTAL_POWER[level] or 0
+                totalPowerUsed = totalPowerUsed + power
+                
+                local cfg = CONFIG.CACHED_CONFIG[level]
+                local fluidName = cfg.fluidId or CONST.FLUID_NAMES[level]
+                local current = getFluidAmount(fluidName)
+                local playerThreshold = (cfg.enabled and cfg.threshold) or 0
+                local minStock = CONFIG.CALCULATED.MINIMUM_STOCK[level] or 0
+                local minRequired = math.max(playerThreshold, minStock)
+                
+                local reason = ""
+                if rsActive then
+                    reason = "全力生产8级水"
+                elseif current < minRequired then
+                    if minStock > playerThreshold then
+                        reason = string.format("库存不足（保底需求 %s mB）", formatNumber(minStock))
+                    else
+                        reason = string.format("库存不足（玩家阈值 %s mB）", formatNumber(playerThreshold))
+                    end
+                else
+                    reason = "库存充足，预生产/保障上级"
+                end
+                
+                print(string.format("  T%d级：开启", level))
+                print(string.format("    当前库存：%s mB", formatNumber(current)))
+                print(string.format("    目标库存：%s mB", formatNumber(minRequired)))
+                print(string.format("    开启原因：%s", reason))
+                print(string.format("    预计耗电：%s EU/t (%s)", formatNumber(power), getGTInfo(power)))
+            end
+        end
+        local usagePercent = CONFIG.TOTAL_POWER > 0 and (totalPowerUsed / CONFIG.TOTAL_POWER) * 100 or 0
+        print(string.format("  总功率预计：%s / %s EU/t (%.1f%%) | %s", 
+            formatNumber(totalPowerUsed), formatNumber(CONFIG.TOTAL_POWER), usagePercent, getGTInfo(totalPowerUsed)))
+    else
+        print("已开启机器：无")
+    end
+    printCacheWaterStatus()
+end
+
+-- 系统初始化
+local function initialize()
+    CONFIG.LAST_PLANT_STATUS = isWaterPlantRunning()
+    for level = 1, 8 do
+        for _, machine in ipairs(machines[level].proxies) do
+            pcall(machine.setWorkAllowed, false)
+        end
+    end
+    CONFIG.LAST_ACTIVE_LEVEL = nil
+    
+    calculateAndSaveLevelParams()
+    updateMinimumStocks()
+    
+    local initAllocation = nil
+    -- 修复：主机运行时才执行初始生产分配
+    if CONFIG.LAST_PLANT_STATUS and not CONFIG.IS_PLANT_SHUTDOWN_FROM_RUNNING then
+        local lowestLevel = getLowestShortageLevel()
+        if lowestLevel then
+            initAllocation = calculateMultiLevelAllocation(lowestLevel)
+            if next(initAllocation) then
+                startProductionByAllocation(initAllocation)
+            end
+        end
+    end
+    
+    clearScreen()
+    printSystemTitle()
+    print("\n==================== 系统初始化完成 ====================")
+    print(string.format("初始主机状态：%s", CONFIG.LAST_PLANT_STATUS and "运行中" or "已停机"))
+    
+    if initAllocation and next(initAllocation) then
+        print("初始生产分配：")
+        local totalPowerUsed = 0
+        local rsActive = isRedstoneActive()
+        for level = 8, 1, -1 do
+            if initAllocation[level] then
+                local power = CONFIG.CALCULATED.LEVEL_TOTAL_POWER[level] or 0
+                totalPowerUsed = totalPowerUsed + power
+                
+                local cfg = CONFIG.CACHED_CONFIG[level]
+                local fluidName = cfg.fluidId or CONST.FLUID_NAMES[level]
+                local current = getFluidAmount(fluidName)
+                local playerThreshold = (cfg.enabled and cfg.threshold) or 0
+                local minStock = CONFIG.CALCULATED.MINIMUM_STOCK[level] or 0
+                local minRequired = math.max(playerThreshold, minStock)
+                
+                local reason = ""
+                if rsActive then
+                    reason = "全力生产8级水"
+                elseif current < minRequired then
+                    if minStock > playerThreshold then
+                        reason = string.format("库存不足（保底需求 %s mB）", formatNumber(minStock))
+                    else
+                        reason = string.format("库存不足（玩家阈值 %s mB）", formatNumber(playerThreshold))
+                    end
+                else
+                    reason = "库存充足，预生产/保障上级"
+                end
+                
+                print(string.format("  T%d级：开启", level))
+                print(string.format("    当前库存：%s mB", formatNumber(current)))
+                print(string.format("    目标库存：%s mB", formatNumber(minRequired)))
+                print(string.format("    开启原因：%s", reason))
+                print(string.format("    预计耗电：%s EU/t (%s)", formatNumber(power), getGTInfo(power)))
+            end
+        end
+        local usagePercent = CONFIG.TOTAL_POWER > 0 and (totalPowerUsed / CONFIG.TOTAL_POWER) * 100 or 0
+        print(string.format("  计划总耗电：%s / %s EU/t (%.1f%%) | %s", 
+            formatNumber(totalPowerUsed), formatNumber(CONFIG.TOTAL_POWER), usagePercent, getGTInfo(totalPowerUsed)))
+    else
+        print("初始状态：所有净水单元关闭")
+    end
+    waitForUserInput("系统初始化完成，是否进入主监控程序？")
+end
+
+-- 主循环
+local function mainLoop()
+    while not CONFIG.SYSTEM_EMERGENCY_STOPPED do
+        local ok, err = pcall(function()
+            loadCacheConfigFromRequesters()
+            updateMinimumStocks()
+            local isRunning = monitorPlantStatus()
+            local productionHint = ""
+            
+            if not CONFIG.IS_PLANT_SHUTDOWN_FROM_RUNNING then
+                local lowestLevel = getLowestShortageLevel()
+                if lowestLevel then
+                    local allocationPlan = calculateMultiLevelAllocation(lowestLevel)
+                    if not isAllocationSame(CONFIG.LAST_ACTIVE_LEVEL, allocationPlan) then
+                        startProductionByAllocation(allocationPlan)
+                        if next(allocationPlan) then
+                            local levels = {}
+                            for l in pairs(allocationPlan) do table.insert(levels, l) end
+                            table.sort(levels)
+                            productionHint = "\n已更新生产方案，开启等级：T" .. table.concat(levels, " T")
+                        else
+                            productionHint = string.format("\nT%d级水短缺，但功率不足/超库存上限无法开启生产。", lowestLevel)
+                        end
+                    else
+                        productionHint = "\n生产方案无变化，持续当前运行状态。"
+                    end
+                else
+                    if CONFIG.LAST_ACTIVE_LEVEL and next(CONFIG.LAST_ACTIVE_LEVEL) then
+                        for level = 1, 8 do
+                            for _, machine in ipairs(machines[level].proxies) do
+                                pcall(machine.setWorkAllowed, false)
+                            end
+                        end
+                        CONFIG.LAST_ACTIVE_LEVEL = nil
+                        productionHint = "\n所有等级水量充足，已关闭所有净水机器。"
+                    else
+                        productionHint = "\n所有等级水量充足，机器保持关闭状态。"
+                    end
+                end
+            else
+                productionHint = "\n主机停机锁定中，无法自动开启机器，请检查主机状态后重启程序。"
+            end
+            
+            clearScreen()
+            printSystemTitle()
+            printFullSystemStatus()
+            if productionHint ~= "" then print(productionHint) end
+            
+            os.sleep(isRunning and CONFIG.CHECK_INTERVAL_RUNNING or CONFIG.CHECK_INTERVAL_STOPPED)
+        end)
+        
+        if not ok then
+            print("\n" .. CONST.COLOR.RED .. "运行出错：" .. tostring(err) .. CONST.COLOR.RESET)
+            print("5秒后重试...")
+            os.sleep(5)
+        end
+    end
+end
+
+-- 主函数
+local function main()
+    -- 首先初始化fluid_interface
+    initializeFluidInterface()
+    
+    if not initializeMachinesAndPower() then
+        print("初始化失败：供能方块扫描失败或缺失，程序无法运行。")
+        os.sleep(3)
+        return
+    end
+    loadCacheConfigFromRequesters()
+    calculateAndSaveLevelParams()
+    
+    waitForUserInput("机器扫描完成，是否继续进入配置查看环节？")
+    selectLevelForDetail()
+    
+    clearScreen()
+    printSystemTitle()
+    print("\n==================== 缓存等级配置 ====================")
+    print(string.format("启用等级：%s（共%d个）",
+        #CONFIG.CACHED_LEVELS > 0 and table.concat(CONFIG.CACHED_LEVELS, "、") or "无",
+        #CONFIG.CACHED_LEVELS))
+    
+    waitForUserInput("配置加载完成，确认继续？")
+    initialize()
+    mainLoop()
+end
+
+-- 启动程序
+main()
